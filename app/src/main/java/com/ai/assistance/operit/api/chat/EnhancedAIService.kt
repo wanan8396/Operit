@@ -11,6 +11,8 @@ import com.ai.assistance.operit.api.chat.enhance.ConversationService
 import com.ai.assistance.operit.api.chat.enhance.FileBindingService
 import com.ai.assistance.operit.api.chat.enhance.MultiServiceManager
 import com.ai.assistance.operit.api.chat.enhance.ToolExecutionManager
+import com.ai.assistance.operit.api.chat.enhance.ToolExecutionScope
+import com.ai.assistance.operit.data.stats.SubagentProgressStore
 import com.ai.assistance.operit.api.chat.enhance.ToolCallBudget
 import com.ai.assistance.operit.api.chat.llmprovider.AIService
 import com.ai.assistance.operit.core.chat.ContextDiagnosticsBuilder
@@ -67,7 +69,6 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.cancelChildren
@@ -87,8 +88,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import com.ai.assistance.operit.data.repository.CustomEmojiRepository
 import com.ai.assistance.operit.data.preferences.CharacterCardManager
 import com.ai.assistance.operit.data.preferences.CharacterCardToolAccessResolver
@@ -466,6 +465,7 @@ class EnhancedAIService private constructor(
         val eventChannel: MutableSharedStream<TextStreamEvent>,
         var modelExecutionSnapshot: ModelExecutionSnapshot? = null,
         val routingChatId: String? = null,
+        val subagentExecutionId: String? = null,
         val delegatedModelRouting: Boolean = false,
         var modelRoutingTarget: com.ai.assistance.operit.data.preferences.FunctionConfigMapping? = null,
         var modelPromptNeedsRefresh: Boolean = false,
@@ -500,8 +500,15 @@ class EnhancedAIService private constructor(
 
     private fun invalidateExecutionContext(context: MessageExecutionContext, reason: String) {
         if (context.isConversationActive.compareAndSet(true, false)) {
+            endSubagentExecution(context, "cancelled")
             AppLogger.d(TAG, "执行上下文已失效: id=${context.executionId}, reason=$reason")
         }
+    }
+
+    private fun endSubagentExecution(context: MessageExecutionContext, status: String) {
+        val executionId = context.subagentExecutionId ?: return
+        val chatId = context.routingChatId ?: return
+        SubagentProgressStore.endExecution(chatId, executionId, status)
     }
 
     private fun invalidateAllExecutionContexts(reason: String) {
@@ -568,8 +575,9 @@ class EnhancedAIService private constructor(
     }
 
     // Coroutine management
-    private val toolProcessingScope = CoroutineScope(Dispatchers.IO)
-    private val toolExecutionJobs = ConcurrentHashMap<String, Job>()
+    private val toolExecutions = ToolExecutionScope()
+    // Explicit user-requested memory updates remain asynchronous, independent of tool execution.
+    private val memoryProcessingScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     // private val conversationHistory = mutableListOf<Pair<String, String>>() // Moved to MessageExecutionContext
     // private val conversationMutex = Mutex() // Moved to MessageExecutionContext
 
@@ -604,7 +612,7 @@ class EnhancedAIService private constructor(
             }
         } finally {
             initScope.cancel()
-            toolProcessingScope.cancel()
+            memoryProcessingScope.cancel()
         }
     }
 
@@ -1081,6 +1089,9 @@ class EnhancedAIService private constructor(
                     conversationHistory = chatHistory.toMutableList(),
                     eventChannel = eventChannel,
                     routingChatId = chatId,
+                    subagentExecutionId = if (!isSubTask && functionType == FunctionType.CHAT && !chatId.isNullOrBlank()) {
+                        SubagentProgressStore.beginExecution(chatId)
+                    } else null,
                     routingSystemPromptTemplate = customSystemPromptTemplate,
                     routingGroupParticipantNamesText = groupParticipantNamesText,
                     routingProxySenderName = proxySenderName,
@@ -1395,12 +1406,10 @@ class EnhancedAIService private constructor(
             } catch (e: Exception) {
                 // 用户取消导致的 Socket closed 是预期行为，不应作为错误处理
                 val isSocketClosed = e.message?.contains("Socket closed", ignoreCase = true) == true
-                if (isSocketClosed) {
-                    if (isExecutionContextActive(execContext)) {
-                        AppLogger.d(TAG, "Stream was cancelled by the user (Socket closed).")
-                    } else {
-                        AppLogger.d(TAG, "Stream closed after execution context was invalidated.")
-                    }
+                // Socket-closed is only expected after explicit cancellation. A live stream losing
+                // its connection must not execute partially generated tool markup as a completed reply.
+                if (isSocketClosed && !isExecutionContextActive(execContext)) {
+                    AppLogger.d(TAG, "Stream closed after execution context was invalidated.")
                 } else {
                     hadFatalError = true
                     if (delegatedInstance) delegatedFailure = e.message ?: e.javaClass.simpleName
@@ -1415,7 +1424,7 @@ class EnhancedAIService private constructor(
                 }
 
                 // 发生无法处理的错误时，也应停止服务，但用户取消除外
-                if (!isSocketClosed) {
+                if (hadFatalError) {
                     if (!isSubTask) stopAiService()
                     if (!providerStreamCollectionStarted) {
                         throw e
@@ -1460,6 +1469,9 @@ class EnhancedAIService private constructor(
                         )
                     }
                 } finally {
+                    // Finish the parent-owned projection even when tool/service cleanup is interrupted.
+                    // Model hops and child retries never end this execution.
+                    endSubagentExecution(execContext, if (hadFatalError) "failed" else "cancelled")
                     execContext.onChildHistoryCheckpoint?.invoke(execContext.conversationHistory.toList())
                     if (!isSubTask && chatId != null) RequestPerformanceStore.stop(chatId)
                     unregisterExecutionContext(execContext)
@@ -2266,7 +2278,9 @@ class EnhancedAIService private constructor(
             }
         }
 
-        val processToolJob = toolProcessingScope.async {
+        // Structured IO work inherits cancellation and exceptions from the collecting parent.
+        // A persistent scope can be poisoned by one failing tool and skip later child finalizers.
+        toolExecutions.run {
             val modelSnapshot = getModelExecutionSnapshot(
                 context,
                 functionType,
@@ -2292,6 +2306,7 @@ class EnhancedAIService private constructor(
                 workspaceEnv = context.workspaceEnv,
                 subagentProfile = subagentProfile,
                 onChildToolEvent = context.onChildToolEvent,
+                parentExecutionId = context.subagentExecutionId,
             )
 
             if (toolBatch.results.isNotEmpty()) {
@@ -2342,17 +2357,7 @@ class EnhancedAIService private constructor(
             )
         }
 
-        val invocationId = java.util.UUID.randomUUID().toString()
-        toolExecutionJobs[invocationId] = processToolJob
-
-        try {
-            processToolJob.await()
-            currentCoroutineContext().ensureActive()
-        } finally {
-            // The work scope is separate: parent cancellation must not leave a child running.
-            withContext(NonCancellable) { processToolJob.cancelAndJoin() }
-            toolExecutionJobs.remove(invocationId)
-        }
+        currentCoroutineContext().ensureActive()
     }
 
 
@@ -2690,6 +2695,7 @@ class EnhancedAIService private constructor(
                 throw e
             } catch (e: Exception) {
                 if (delegatedInstance) delegatedFailure = e.message ?: e.javaClass.simpleName
+                endSubagentExecution(context, "failed")
                 AppLogger.e(TAG, "处理工具执行结果时出错", e)
                 withContext(Dispatchers.Main) {
                     _inputProcessingState.value =
@@ -3081,7 +3087,8 @@ class EnhancedAIService private constructor(
 
     /** Cancel all tool executions */
     private fun cancelAllToolExecutions() {
-        toolProcessingScope.coroutineContext.cancelChildren()
+        toolExecutions.cancelAll()
+        memoryProcessingScope.coroutineContext.cancelChildren()
     }
 
     /**
@@ -3386,7 +3393,7 @@ class EnhancedAIService private constructor(
         onError: (suspend (Exception) -> Unit)? = null
     ) {
         AppLogger.d(TAG, "手动触发记忆更新...")
-        toolProcessingScope.launch {
+        memoryProcessingScope.launch {
             try {
                 val memoryService = multiServiceManager.getServiceForFunction(FunctionType.MEMORY)
                 com.ai.assistance.operit.api.chat.library.MemoryLibrary.saveMemoryAsync(

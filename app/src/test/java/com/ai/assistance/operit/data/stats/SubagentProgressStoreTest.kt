@@ -139,6 +139,24 @@ class SubagentProgressStoreTest {
     }
 
     @Test
+    fun terminalStatusCannotBeChangedByLateAttemptRetryOrFinish() {
+        for (status in listOf("completed", "failed", "timed_out", "cancelled")) {
+            val chatId = UUID.randomUUID().toString()
+            try {
+                val round = SubagentProgressStore.beginRound(chatId)
+                SubagentProgressStore.start(chatId, SubagentProgress("agent", "Explore", "Inspect"), round)
+                SubagentProgressStore.finish(chatId, "agent", status)
+                val terminal = SubagentProgressStore.sessions.value.getValue(chatId)
+                SubagentProgressStore.retry(chatId, "agent", 9L, "late disconnect")
+                SubagentProgressStore.beginAttempt(chatId, "agent", 10L)
+                SubagentProgressStore.finish(chatId, "agent", "completed")
+                assertEquals(terminal, SubagentProgressStore.sessions.value.getValue(chatId))
+                assertTrue(chatId !in SubagentProgressStore.conversationSessions.value)
+            } finally { SubagentProgressStore.clear(chatId) }
+        }
+    }
+
+    @Test
     fun boundsToolHistory() {
         val chatId = UUID.randomUUID().toString()
         try {

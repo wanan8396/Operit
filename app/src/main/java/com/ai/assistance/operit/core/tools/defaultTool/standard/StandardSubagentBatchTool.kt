@@ -29,7 +29,7 @@ class StandardSubagentBatchTool(context: Context) : ToolExecutor {
             return@flow
         }
         val roundId = com.ai.assistance.operit.data.stats.SubagentProgressStore.beginRound(
-            requireNotNull(parent.callerChatId)
+            requireNotNull(parent.callerChatId), parent.parentExecutionId,
         )
         val roundExecutor = object : ToolExecutor {
             override fun invoke(childTool: AITool): ToolResult = childExecutor.invoke(childTool)

@@ -15,7 +15,7 @@ on:
           - ':app:bundleRelease'
           - ':app:packageRelease'
   push:
-    branches: [main, feat/chat-token-meter-subagents, feat/plan-steps-and-subagents]
+    branches: [main, feat/chat-token-meter-subagents, feat/plan-steps-and-subagents, fix/subagent-disconnect-lifecycle]
     paths:
       - .github/workflows/android-build.yml
       - .gitmodules
@@ -208,6 +208,8 @@ jobs:
             --tests 'com.ai.assistance.operit.core.tools.defaultTool.standard.*Test' \
             --tests 'com.ai.assistance.operit.data.stats.*StoreTest' \
             --tests 'com.ai.assistance.operit.data.stats.SubagentConversationProjectionTest' \
+            --tests 'com.ai.assistance.operit.data.stats.SubagentParentLifecycleTest' \
+            --tests 'com.ai.assistance.operit.api.chat.enhance.ToolExecutionScopeTest' \
             --tests 'com.ai.assistance.operit.core.chat.ContextSummaryPolicyTest' \
             --tests 'com.ai.assistance.operit.ui.features.chat.components.SubagentConversationStatusTest' \
             --tests 'com.ai.assistance.operit.data.model.FunctionTypeTest' \

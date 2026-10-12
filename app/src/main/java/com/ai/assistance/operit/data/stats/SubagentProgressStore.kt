@@ -18,7 +18,9 @@ data class SubagentProgress(
     val lastError: String? = null,
     /** Task-wide count, independent of retries and the bounded activity list. */
     val toolCallCount: Long = tools.size.toLong(),
-)
+) {
+    val isActive: Boolean get() = status == "running" || status == "retrying"
+}
 
 /** Parent-session projection only. Never stores child reasoning or raw tool output. */
 object SubagentProgressStore {
@@ -26,6 +28,8 @@ object SubagentProgressStore {
     val sessions: StateFlow<Map<String, List<SubagentProgress>>> = state.asStateFlow()
 
     private val rounds = mutableMapOf<String, String>()
+    // Ownership is per collected parent execution, not per model hop or UI processing state.
+    private val executions = mutableMapOf<String, String>()
     // Deduplicate lifecycle events even after their row leaves the 64-item activity window.
     private val seenToolIds = mutableMapOf<Pair<String, String>, MutableSet<String>>()
     private val conversationState = MutableStateFlow<Map<String, List<SubagentProgress>>>(emptyMap())
@@ -34,17 +38,54 @@ object SubagentProgressStore {
     private fun publish(chatId: String, agents: List<SubagentProgress>) {
         state.value = state.value + (chatId to agents)
         // Completed tasks remain inspectable in input details; only active rounds occupy the conversation tail.
-        conversationState.value = if (agents.any { it.status == "running" || it.status == "retrying" }) {
+        conversationState.value = if (agents.any { it.isActive }) {
             conversationState.value + (chatId to agents)
         } else {
             conversationState.value - chatId
         }
     }
 
+    /** A new parent turn invalidates delayed callbacks from the preceding collected stream. */
+    @Synchronized
+    fun beginExecution(chatId: String): String {
+        require(chatId.isNotBlank()) { "A chat id is required" }
+        terminateActive(chatId, "cancelled")
+        rounds.remove(chatId)
+        val executionId = java.util.UUID.randomUUID().toString()
+        executions[chatId] = executionId
+        return executionId
+    }
+
+    /** Never allow an old stream finalizer to terminate a reconnected/new parent turn. */
+    @Synchronized
+    fun endExecution(chatId: String, executionId: String, status: String = "cancelled") {
+        require(status in setOf("failed", "cancelled"))
+        if (executions[chatId] != executionId) return
+        executions.remove(chatId)
+        rounds.remove(chatId)
+        terminateActive(chatId, status)
+    }
+
+    private fun terminateActive(chatId: String, status: String) {
+        val agents = state.value[chatId] ?: return
+        publish(chatId, agents.map { if (it.isActive) terminal(it, status) else it })
+    }
+
+    private fun terminal(agent: SubagentProgress, status: String): SubagentProgress = agent.copy(
+        status = status,
+        tools = agent.tools.map { tool ->
+            if (!tool.isTerminal) tool.copy(status = if (status == "completed") "error" else status)
+            else tool
+        },
+    )
+
     /** One batch is one round. Start it before launching children, never from each batch child. */
     @Synchronized
-    fun beginRound(chatId: String): String {
+    fun beginRound(chatId: String, executionId: String? = null): String {
         require(chatId.isNotBlank()) { "A chat id is required" }
+        if (executionId != null && executions[chatId] != executionId) {
+            throw kotlinx.coroutines.CancellationException("Parent execution has ended")
+        }
         val roundId = java.util.UUID.randomUUID().toString()
         rounds[chatId] = roundId
         seenToolIds.keys.removeAll { it.first == chatId }
@@ -65,7 +106,7 @@ object SubagentProgressStore {
     fun beginAttempt(chatId: String, agentId: String, attempt: Long) {
         val agents = state.value[chatId] ?: return
         publish(chatId, agents.map {
-            if (it.agentId == agentId) it.copy(status = "running", attempt = attempt) else it
+            if (it.agentId == agentId && it.isActive) it.copy(status = "running", attempt = attempt) else it
         })
     }
 
@@ -73,7 +114,7 @@ object SubagentProgressStore {
     fun retry(chatId: String, agentId: String, attempt: Long, reason: String) {
         val agents = state.value[chatId] ?: return
         publish(chatId, agents.map {
-            if (it.agentId == agentId) it.copy(
+            if (it.agentId == agentId && it.isActive) it.copy(
                 status = "retrying", attempt = attempt, lastError = reason.take(2000),
                 tools = it.tools.map { tool -> if (!tool.isTerminal) tool.copy(status = "error") else tool }
             ) else it
@@ -105,20 +146,15 @@ object SubagentProgressStore {
         require(status in setOf("completed", "failed", "timed_out", "cancelled"))
         val agents = state.value[chatId] ?: return
         publish(chatId, agents.map {
-            if (it.agentId == agentId) it.copy(
-                status = status,
-                tools = it.tools.map { tool ->
-                    if (tool.status == "scheduled" || tool.status == "started") {
-                        tool.copy(status = if (status == "completed") "error" else status)
-                    } else tool
-                }
-            ) else it
+            // Terminal outcomes are absorbing: a late retry/finalizer cannot revive or overwrite them.
+            if (it.agentId == agentId && it.isActive) terminal(it, status) else it
         })
     }
 
     @Synchronized
     fun clear(chatId: String) {
         rounds.remove(chatId)
+        executions.remove(chatId)
         seenToolIds.keys.removeAll { it.first == chatId }
         state.value = state.value - chatId
         conversationState.value = conversationState.value - chatId

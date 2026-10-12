@@ -113,6 +113,14 @@ private fun SubagentConversationRow(agent: SubagentProgress) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (status == SubagentConversationStatus.RETRYING) {
+                // A disconnected child remains live and resumable, but must not look like a frozen tool.
+                Text(
+                    text = "$statusText · ${stringResource(R.string.plan_agent_attempt, agent.attempt)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             if (status == SubagentConversationStatus.RUNNING) {
                 agent.tools.lastOrNull { !it.isTerminal }?.let { tool ->
                     Text(

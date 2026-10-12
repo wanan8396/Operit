@@ -60,7 +60,7 @@ class StandardSubagentTool(context: Context) : ToolExecutor {
             emit(failure(tool, "Missing parent chat identity"))
             return@flow
         }
-        val roundId = batchRoundId ?: com.ai.assistance.operit.data.stats.SubagentProgressStore.beginRound(parentChatId)
+        val roundId = batchRoundId ?: com.ai.assistance.operit.data.stats.SubagentProgressStore.beginRound(parentChatId, parent.parentExecutionId)
         val continuation = SubagentContinuation()
         com.ai.assistance.operit.data.stats.SubagentProgressStore.start(parentChatId,
             com.ai.assistance.operit.data.stats.SubagentProgress(id, request.profile.wireName, request.description), roundId)
