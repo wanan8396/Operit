@@ -6,7 +6,7 @@ on:
       gradle_task:
         description: Gradle task to run
         required: true
-        default: assembleDebug
+        default: ':app:packageRelease'
         type: choice
         options:
           - assembleDebug
@@ -233,7 +233,8 @@ jobs:
           set -euo pipefail
           case "$EVENT_NAME" in
             push)
-              if [[ "$GITHUB_REF_NAME" == "feat/plan-steps-and-subagents" ]]; then
+              if [[ "$GITHUB_REF_NAME" == "feat/plan-steps-and-subagents" ||
+                    "$GITHUB_REF_NAME" == "fix/subagent-disconnect-lifecycle" ]]; then
                 gradle_task=:app:packageRelease
               else
                 gradle_task=assembleDebug
