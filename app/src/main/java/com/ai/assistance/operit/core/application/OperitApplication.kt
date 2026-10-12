@@ -122,6 +122,9 @@ class OperitApplication : Application(), ImageLoaderFactory, WorkConfiguration.P
         appStartupTimeMs = startTime
         instance = this
         PlanStepStore.initialize(this)
+        com.ai.assistance.operit.data.stats.RequestPerformanceStore.initialize(
+            com.ai.assistance.operit.data.stats.RequestPerformancePreferences(this),
+        )
 
         // Workers and receivers can cold-start the process without creating an Activity.
         // Initialize process-wide preference dependencies before those entry points can run.

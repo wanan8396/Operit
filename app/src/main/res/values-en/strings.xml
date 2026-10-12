@@ -8602,7 +8602,7 @@
     <string name="context_diag_reason_send">Pre-send asynchronous threshold</string>
     <string name="context_diag_reason_automatic">Automatic summary threshold</string>
     <string name="toolreg_read_session_context_desc">Retrieve context from the current session history</string>
-    <string name="usage_token_rate">Token rate: %1$s token/s</string>
-    <string name="usage_first_token_latency">First-token latency: %1$s s</string>
+    <string name="usage_token_rate">Avg. rate: %1$s token/s</string>
+    <string name="usage_first_token_latency">Avg. first token: %1$s s</string>
     <string name="usage_performance_hint">Performance measures the latest parent model request. First token means the first non-empty content chunk. Rate divides output tokens by model output time after that chunk, excluding tool execution. Missing measurements are not shown as zero.</string>
 </resources>

@@ -8588,7 +8588,7 @@
     <string name="context_diag_reason_send">发送前异步压缩阈值</string>
     <string name="context_diag_reason_automatic">自动压缩阈值</string>
     <string name="toolreg_read_session_context_desc">检索当前会话的历史上下文</string>
-    <string name="usage_token_rate">Token 速率：%1$s token/s</string>
-    <string name="usage_first_token_latency">首字延迟：%1$s s</string>
+    <string name="usage_token_rate">平均速率：%1$s token/s</string>
+    <string name="usage_first_token_latency">平均首字：%1$s s</string>
     <string name="usage_performance_hint">速率与首字延迟统计最近一次主对话模型请求。首字为收到的首个非空内容片段，速率为输出 Token 数除以首字后的模型输出时间，不含工具执行时间。未记录的数据不显示为 0。</string>
 </resources>

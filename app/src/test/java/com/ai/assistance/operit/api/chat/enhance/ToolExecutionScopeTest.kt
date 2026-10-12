@@ -111,7 +111,9 @@ class ToolExecutionScopeTest {
         val scope = ToolExecutionScope()
         val failure = IOException("tool failure")
         val caught = runCatching { scope.run<String> { throw failure } }.exceptionOrNull()
-        assertTrue(caught === failure)
+        // Debug stacktrace recovery may copy IOException while preserving its type/message.
+        assertTrue(caught is IOException)
+        assertEquals(failure.message, caught?.message)
         assertEquals("next", scope.run { "next" })
     }
 
@@ -121,7 +123,8 @@ class ToolExecutionScopeTest {
         assertEquals(42, scope.run { 42 })
         val failure = IllegalStateException("expected")
         val caught = runCatching { scope.run<Int> { throw failure } }.exceptionOrNull()
-        assertTrue(caught === failure)
+        assertTrue(caught is IllegalStateException)
+        assertEquals(failure.message, caught?.message)
         assertFalse(scope.run { false })
     }
 }
