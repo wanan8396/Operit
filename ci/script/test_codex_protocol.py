@@ -26,7 +26,7 @@ def main():
         if not response or "error" in response or not isinstance(response.get("result"),dict):
             proc.kill(); proc.wait(); raise SystemExit("initialize failed/error; no API request made")
         send({"jsonrpc":"2.0","method":"initialized","params":{}})
-        send({"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"model":"gpt-5-codex","modelProvider":"operit","approvalPolicy":"never","sandbox":"read-only"}})
+        send({"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"model":"gpt-5-codex","model_provider":"operit","approvalPolicy":"never","sandbox":"read-only"}})
         deadline=time.monotonic()+15; got_thread=False
         while time.monotonic()<deadline:
             if not selector.select(max(0,deadline-time.monotonic())): break
