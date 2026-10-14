@@ -41,7 +41,7 @@ def main():
     if expected_arch == "x86_64" and not args.output: raise SystemExit("x86_64 target requires --output temporary path")
     root=os.path.abspath(args.repository); out=os.path.abspath(args.output) if args.output else os.path.join(root,OUT); os.makedirs(os.path.dirname(out),exist_ok=True)
     with tempfile.TemporaryDirectory() as td:
-        archive=os.path.join(td,ASSET); data,_=request(asset["browser_download_url"]); open(archive,"wb").write(data)
+        archive=os.path.join(td,asset["name"]); data,_=request(asset["browser_download_url"]); open(archive,"wb").write(data)
         got=sha256(archive)
         if got != expected: raise SystemExit(f"digest mismatch: {got} != {expected}")
         with tarfile.open(archive,"r:gz") as tar:
