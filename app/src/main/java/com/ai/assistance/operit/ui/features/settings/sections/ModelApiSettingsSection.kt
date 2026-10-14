@@ -1425,6 +1425,7 @@ private fun getBuiltInProviderDisplayName(provider: ApiProviderType, context: an
         ApiProviderType.XAI -> context.getString(R.string.provider_xai)
         ApiProviderType.OPENAI_RESPONSES -> context.getString(R.string.provider_openai_responses)
         ApiProviderType.OPENAI_CODEX -> context.getString(R.string.provider_openai_codex)
+        ApiProviderType.CODEX_API -> "Codex (API Key / Local Engine)"
         ApiProviderType.OPENAI_RESPONSES_GENERIC -> context.getString(R.string.provider_openai_responses_generic)
         ApiProviderType.OPENAI_GENERIC -> context.getString(R.string.provider_openai_generic)
         ApiProviderType.ANTHROPIC -> context.getString(R.string.provider_anthropic)
