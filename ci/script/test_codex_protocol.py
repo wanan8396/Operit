@@ -1,43 +1,82 @@
 #!/usr/bin/env python3
-from __future__ import annotations
-import argparse, json, os, selectors, subprocess, sys, tempfile, time
+"""Exercise official app-server against an isolated API-key provider; no model request."""
+import argparse
+import json
+import os
+import queue
+import subprocess
+import tempfile
+import threading
+import time
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument("binary"); args=p.parse_args()
-    if not os.path.isfile(args.binary) or os.path.getsize(args.binary)==0: raise SystemExit("missing/empty app-server")
+    parser = argparse.ArgumentParser()
+    parser.add_argument('binary')
+    args = parser.parse_args()
+    binary = os.path.abspath(args.binary)
     with tempfile.TemporaryDirectory() as home:
-        os.makedirs(home, exist_ok=True)
-        config="[model_providers.operit]\nenv_key = \"OPERIT_CODEX_API_KEY\"\nrequires_openai_auth = false\nwire_api = \"responses\"\nbase_url = \"http://127.0.0.1:9/v1\"\n"
-        assert 'env_key = \"OPERIT_CODEX_API_KEY\"' in config and "requires_openai_auth = false" in config
-        open(os.path.join(home,"config.toml"),"w").write(config)
-        env=os.environ.copy(); env["CODEX_HOME"]=home; env["OPERIT_CODEX_API_KEY"]="smoke-not-a-real-key"
-        proc=subprocess.Popen([args.binary,"--listen","stdio://"],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env)
-        def send(x): proc.stdin.write(json.dumps(x)+"\n"); proc.stdin.flush()
-        send({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"operit-ci","version":"0"},"capabilities":{}}})
-        selector=selectors.DefaultSelector(); selector.register(proc.stdout,selectors.EVENT_READ)
-        deadline=time.monotonic()+15; lines=[]; response=None
-        while time.monotonic()<deadline:
-            events=selector.select(max(0,deadline-time.monotonic()))
-            if not events: break
-            line=proc.stdout.readline()
-            if not line: break
-            msg=json.loads(line); lines.append(msg)
-            if msg.get("id")==1: response=msg; break
-        if not response or "error" in response or not isinstance(response.get("result"),dict):
-            proc.kill(); proc.wait(); raise SystemExit("initialize failed/error; no API request made")
-        send({"jsonrpc":"2.0","method":"initialized","params":{}})
-        send({"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"model":"gpt-5-codex","model_provider":"operit","approvalPolicy":"never","sandbox":"read-only"}})
-        deadline=time.monotonic()+15; got_thread=False
-        while time.monotonic()<deadline:
-            if not selector.select(max(0,deadline-time.monotonic())): break
-            line=proc.stdout.readline()
-            if not line: break
-            msg=json.loads(line); lines.append(msg)
-            if msg.get("id")==2:
-                if "error" in msg: proc.kill(); proc.wait(); raise SystemExit("thread/start rejected configured provider")
-                got_thread=True; break
-        proc.terminate(); proc.wait(timeout=5)
-        if not got_thread: raise SystemExit("thread/start timed out")
-        print("initialize/initialized/thread-start passed with operit provider; no paid API request")
-        print("Codex app-server stdio initialize + initialized handshake passed; no real model/API request made")
-if __name__=="__main__": main()
+        with open(os.path.join(home, 'config.toml'), 'w') as config:
+            config.write('''model = "gpt-5-codex"
+model_provider = "operit"
+[model_providers.operit]
+name = "Operit CI"
+env_key = "OPERIT_CODEX_API_KEY"
+requires_openai_auth = false
+wire_api = "responses"
+base_url = "http://127.0.0.1:9/v1"
+''')
+        env = os.environ.copy()
+        env.update(CODEX_HOME=home, OPERIT_CODEX_API_KEY='smoke-not-a-real-key')
+        messages = queue.Queue()
+        with tempfile.TemporaryFile(mode='w+t') as stderr:
+            proc = subprocess.Popen([binary, '--listen', 'stdio://'], stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=stderr, text=True, env=env, cwd=home)
+            def reader():
+                try:
+                    for line in proc.stdout:
+                        messages.put(json.loads(line))
+                except Exception as error:
+                    messages.put(error)
+                finally:
+                    messages.put(EOFError('app-server stdout closed'))
+            threading.Thread(target=reader, daemon=True).start()
+            def send(message):
+                proc.stdin.write(json.dumps(message) + '\n')
+                proc.stdin.flush()
+            def reply(request_id):
+                deadline = time.monotonic() + 45
+                while time.monotonic() < deadline:
+                    message = messages.get(timeout=max(.01, deadline - time.monotonic()))
+                    if isinstance(message, Exception):
+                        raise message
+                    if message.get('id') == request_id:
+                        if 'error' in message:
+                            raise RuntimeError(json.dumps(message['error']))
+                        return message['result']
+                raise TimeoutError('app-server reply timed out')
+            try:
+                send({'id': 1, 'method': 'initialize', 'params': {
+                    'clientInfo': {'name': 'operit-ci', 'version': '1'},
+                    'capabilities': {'experimentalApi': False}}})
+                assert isinstance(reply(1), dict)
+                send({'method': 'initialized'})
+                send({'id': 2, 'method': 'thread/start', 'params': {
+                    'model': 'gpt-5-codex', 'modelProvider': 'operit',
+                    'cwd': home, 'ephemeral': True, 'approvalPolicy': 'on-request', 'sandbox': 'read-only'}})
+                result = reply(2)
+                assert result['thread']['id'], result
+                assert result.get('modelProvider', 'operit') == 'operit', result
+                print('PASS: real initialize/initialized/thread/start; operit API-key provider; no OAuth or paid inference')
+            except Exception:
+                stderr.flush(); stderr.seek(0)
+                print(stderr.read()[-8000:])
+                raise
+            finally:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill(); proc.wait(timeout=5)
+
+if __name__ == '__main__':
+    main()
