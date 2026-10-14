@@ -1,341 +1,200 @@
 package com.ai.assistance.operit.core.codex
 
 import android.content.Context
-import android.os.Environment
-import com.ai.assistance.operit.util.AppLogger
-import java.io.BufferedReader
-import java.io.BufferedWriter
+import android.os.Build
 import java.io.File
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * Operit 内置的 Codex Core 进程管理器与客户端协议层。
- * 负责通过标准输入输出 (stdio) 与 Codex App-Server 进行 JSON-RPC 2.0 异步双向通信。
- */
-class CodexCoreManager private constructor(private val context: Context) {
+/** One private official app-server process per AIService; never shares credentials or threads. */
+class CodexCoreManager(private val context: Context) {
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val lifecycle = Mutex()
+    private val ids = AtomicLong(1)
+    private val pending = ConcurrentHashMap<Long, CompletableDeferred<JSONObject>>()
+    private val notifications = ConcurrentHashMap<String, Channel<JSONObject>>()
+    @Volatile private var process: Process? = null
+    private var writer: java.io.BufferedWriter? = null
+    private var currentKey: String? = null
+    private var currentEndpoint: String? = null
+    private val engineDir = File(context.filesDir, "codex-engine")
+
+    suspend fun ensureStarted(endpoint: String, key: String, model: String, headers: Map<String, String>) =
+        lifecycle.withLock {
+            val baseUrl = normalizeEndpoint(endpoint)
+            require(model.isNotBlank()) { "Codex requires a configured model" }
+            if (process?.isAlive == true && currentKey == key && currentEndpoint == baseUrl) return@withLock
+            stop()
+            withContext(Dispatchers.IO) {
+                require(Build.SUPPORTED_ABIS.any { it == "arm64-v8a" }) { "Bundled Codex requires ARM64" }
+                val binDir = File(context.filesDir, "usr/bin")
+                val proot = File(binDir, "proot")
+                val rootfs = File(context.filesDir, "usr/var/lib/proot-distro/installed-rootfs/ubuntu")
+                require(proot.canExecute() && File(rootfs, "usr/bin/env").isFile) {
+                    "Initialize the Operit Ubuntu terminal before using Codex API"
+                }
+                engineDir.mkdirs()
+                val binary = File(engineDir, "codex-app-server")
+                // CI supplies the pinned upstream executable. Never downloads code at chat time.
+                context.assets.open("codex/codex-app-server").use { input ->
+                    val temp = File(engineDir, "codex-app-server.tmp")
+                    temp.outputStream().use { input.copyTo(it) }
+                    check(temp.renameTo(binary)) { "Cannot install bundled Codex" }
+                }
+                check(binary.setExecutable(true, true)) { "Cannot make Codex executable" }
+                val home = File(engineDir, "home").apply { mkdirs() }
+                File(engineDir, "workspace").mkdirs()
+                // API keys are ONLY in child environment, not argv, config.toml or logs.
+                home.resolve("config.toml").writeText("""
+                    model = ${JSONObject.quote(model)}
+                    model_provider = "operit"
+                    approval_policy = "on-request"
+                    sandbox_mode = "read-only"
+                    [model_providers.operit]
+                    name = "Operit API"
+                    base_url = ${JSONObject.quote(baseUrl)}
+                    wire_api = "responses"
+                    env_key = "OPERIT_CODEX_API_KEY"
+                    requires_openai_auth = false
+                """.trimIndent() + "\n")
+                val args = mutableListOf(
+                    proot.absolutePath, "-0", "-r", rootfs.absolutePath,
+                    "-b", "/dev", "-b", "/proc", "-b", "/sys",
+                    "-b", "${engineDir.absolutePath}:/operit-codex",
+                    "-b", "/storage/emulated/0:/sdcard",
+                    "-w", "/operit-codex/workspace", "/usr/bin/env",
+                    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                    "HOME=/root", "CODEX_HOME=/operit-codex/home",
+                    "/operit-codex/codex-app-server", "--listen", "stdio://"
+                )
+                val pb = ProcessBuilder(args).directory(context.filesDir).redirectErrorStream(false)
+                val env = pb.environment()
+                env.remove("LD_PRELOAD")
+                env["PATH"] = "${binDir.absolutePath}:/system/bin"
+                env["PROOT_LOADER"] = File(binDir, "loader").absolutePath
+                env["PROOT_TMP_DIR"] = File(context.filesDir, "tmp").apply { mkdirs() }.absolutePath
+                env["TMPDIR"] = env.getValue("PROOT_TMP_DIR")
+                env["OPERIT_CODEX_API_KEY"] = key
+                // Custom headers also use env indirection; never persist their secret values.
+                if (headers.isNotEmpty()) {
+                    home.resolve("config.toml").appendText("[model_providers.operit.env_http_headers]\n")
+                    headers.entries.forEachIndexed { index, entry ->
+                        val name = "OPERIT_CODEX_HEADER_$index"
+                        env[name] = entry.value
+                        home.resolve("config.toml").appendText("${JSONObject.quote(entry.key)} = ${JSONObject.quote(name)}\n")
+                    }
+                }
+                val proc = pb.start()
+                process = proc
+                writer = proc.outputStream.bufferedWriter(Charsets.UTF_8)
+                currentKey = key
+                currentEndpoint = baseUrl
+                scope.launch { readLoop(proc) }
+                // Drain stderr without logging arbitrary provider output or credentials.
+                scope.launch { proc.errorStream.use { stream -> val buffer = ByteArray(4096); while (stream.read(buffer) >= 0) { } } }
+            }
+            try {
+                request("initialize", JSONObject().put("clientInfo", JSONObject()
+                    .put("name", "operit-codex-api").put("version", "1.0"))
+                    .put("capabilities", JSONObject().put("experimentalApi", false)))
+                write(JSONObject().put("method", "initialized"))
+            } catch (e: Exception) { stop(); throw e }
+        }
+
+    suspend fun request(method: String, params: JSONObject): JSONObject {
+        val id = ids.getAndIncrement()
+        val reply = CompletableDeferred<JSONObject>()
+        pending[id] = reply
+        try {
+            write(JSONObject().put("id", id).put("method", method).put("params", params))
+            return withTimeout(60_000) { reply.await() }
+        } finally { pending.remove(id) }
+    }
+
+    private fun write(message: JSONObject) {
+        val out = writer ?: error("Codex app-server is not running")
+        synchronized(out) { out.write(message.toString()); out.newLine(); out.flush() }
+    }
+
+    suspend fun startThread(instructions: String, cwd: String? = null): String {
+        // No globally hard-coded active chat ID. Caller creates an isolated thread per request.
+        val result = request("thread/start", JSONObject()
+            .put("modelProvider", "operit").put("cwd", cwd ?: "/operit-codex/workspace")
+            .put("developerInstructions", instructions).put("ephemeral", true)
+            .put("sandbox", "read-only").put("approvalPolicy", "on-request"))
+        return result.getJSONObject("thread").getString("id")
+    }
+
+    fun subscribe(threadId: String): Channel<JSONObject> = Channel<JSONObject>(Channel.UNLIMITED).also {
+        check(notifications.putIfAbsent(threadId, it) == null)
+    }
+    fun unsubscribe(threadId: String) { notifications.remove(threadId)?.close() }
+
+    suspend fun startTurn(threadId: String, text: String): String = request("turn/start", JSONObject()
+        .put("threadId", threadId).put("input", JSONArray().put(JSONObject()
+            .put("type", "text").put("text", text).put("textElements", JSONArray()))))
+        .getJSONObject("turn").getString("id")
+
+    suspend fun interrupt(threadId: String, turnId: String) {
+        request("turn/interrupt", JSONObject().put("threadId", threadId).put("turnId", turnId))
+    }
+
+    private suspend fun readLoop(proc: Process) {
+        try {
+            proc.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    val message = JSONObject(line)
+                    if (message.has("method") && message.has("id")) {
+                        // Explicit denial until Android native approval UI is implemented.
+                        val method = message.getString("method")
+                        val response = JSONObject().put("id", message.get("id"))
+                        if (method.endsWith("requestApproval")) {
+                            response.put("result", JSONObject().put("decision", "decline"))
+                        } else response.put("error", JSONObject().put("code", -32601)
+                            .put("message", "Operit has not enabled this server request"))
+                        write(response)
+                    } else if (message.has("id")) {
+                        val reply = pending.remove(message.getLong("id")) ?: continue
+                        if (message.has("error")) reply.completeExceptionally(IllegalStateException("Codex RPC failed: ${message.getJSONObject("error").optInt("code")}"))
+                        else reply.complete(message.optJSONObject("result") ?: JSONObject())
+                    } else {
+                        val params = message.optJSONObject("params") ?: continue
+                        notifications[params.optString("threadId")]?.send(message)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            if (process === proc) failPending(IllegalStateException("Codex protocol connection closed", e))
+        } finally {
+            if (process === proc) { process = null; writer = null; failPending(IllegalStateException("Codex app-server exited")) }
+        }
+    }
+
+    private fun failPending(error: Exception) {
+        pending.values.forEach { it.completeExceptionally(error) }; pending.clear()
+        notifications.values.forEach { it.close(error) }; notifications.clear()
+    }
+    fun stop() {
+        val proc = process; process = null; writer = null; currentKey = null; currentEndpoint = null
+        runCatching { proc?.outputStream?.close() }; proc?.destroy()
+        failPending(IllegalStateException("Codex stopped"))
+    }
+    fun release() { stop(); scope.cancel() }
 
     companion object {
-        private const val TAG = "CodexCoreManager"
-
-        @Volatile
-        private var instance: CodexCoreManager? = null
-
-        fun getInstance(context: Context): CodexCoreManager {
-            return instance ?: synchronized(this) {
-                instance ?: CodexCoreManager(context.applicationContext).also { instance = it }
-            }
+        fun normalizeEndpoint(endpoint: String): String {
+            val raw = endpoint.trim().trimEnd('/')
+            val uri = java.net.URI(raw)
+            require(uri.scheme in setOf("http", "https") && !uri.host.isNullOrBlank() && uri.userInfo == null && uri.query == null && uri.fragment == null) { "Invalid Codex API endpoint" }
+            require(!uri.path.endsWith("/chat/completions")) { "Official Codex requires Responses API, not chat/completions" }
+            return raw.removeSuffix("/responses")
         }
     }
-
-    private val scope = CoroutineScope(Dispatchers.IO + Job())
-    private val requestCounter = AtomicLong(1)
-    private val pendingRequests = ConcurrentHashMap<Long, CompletableDeferred<JSONObject>>()
-
-    private val _events = MutableSharedFlow<CodexEvent>(extraBufferCapacity = 64)
-    val events: SharedFlow<CodexEvent> = _events.asSharedFlow()
-
-    private var process: Process? = null
-    private var stdinWriter: BufferedWriter? = null
-    private var isRunning = false
-    private var binaryPath: String = "codex"
-    private var workspaceDir: File = File(Environment.getExternalStorageDirectory(), "Operit/workspace")
-
-    data class CodexEvent(
-        val method: String,
-        val threadId: String,
-        val turnId: String? = null,
-        val delta: String? = null,
-        val command: String? = null,
-        val output: String? = null,
-        val status: String? = null,
-        val rawParams: JSONObject? = null
-    )
-
-    init {
-        resolveEnvironment()
-    }
-
-    private fun resolveEnvironment() {
-        val sdcard = Environment.getExternalStorageDirectory()
-        workspaceDir = if (sdcard != null && sdcard.exists()) {
-            File(sdcard, "Operit/workspace")
-        } else {
-            File(context.filesDir, "workspace")
-        }
-        if (!workspaceDir.exists()) {
-            workspaceDir.mkdirs()
-        }
-
-        // 探测 Codex 核心二进制位置
-        val appNativeLib = File(context.applicationInfo.nativeLibraryDir, "libcodex.so")
-        val systemBin = File("/usr/local/bin/codex")
-        val prootBin = File("/data/user/0/com.ai.assistance.operit/files/usr/var/lib/proot-distro/installed-rootfs/ubuntu/usr/local/bin/codex")
-
-        binaryPath = when {
-            appNativeLib.exists() && appNativeLib.canExecute() -> appNativeLib.absolutePath
-            systemBin.exists() && systemBin.canExecute() -> systemBin.absolutePath
-            prootBin.exists() && prootBin.canExecute() -> prootBin.absolutePath
-            else -> "codex"
-        }
-    }
-
-    @Synchronized
-    suspend fun ensureStarted() {
-        if (isRunning && process != null) return
-
-        try {
-            AppLogger.i(TAG, "Starting Codex Core daemon from: $binaryPath, workspace: ${workspaceDir.absolutePath}")
-            val pb = ProcessBuilder(binaryPath, "app-server", "--transport", "stdio")
-            pb.directory(workspaceDir)
-            pb.redirectErrorStream(false)
-
-            val proc = pb.start()
-            process = proc
-            stdinWriter = BufferedWriter(OutputStreamWriter(proc.outputStream, StandardCharsets.UTF_8))
-            isRunning = true
-
-            // 启动标准输出监听协程
-            scope.launch { readStdoutLoop(proc) }
-            scope.launch { readStderrLoop(proc) }
-
-            // 发起协议握手
-            initializeHandshake()
-        } catch (e: Exception) {
-            AppLogger.w(TAG, "Native Codex Core process spawn failed (${e.message}), fallback to embedded agent simulator.")
-            isRunning = false
-        }
-    }
-
-    private suspend fun initializeHandshake() {
-        val clientInfo = JSONObject().apply {
-            put("name", "operit-native-codex")
-            put("title", "Operit Android Builtin Codex")
-            put("version", "1.0.0")
-        }
-        val capabilities = JSONObject().apply {
-            put("experimentalApi", true)
-        }
-        val params = JSONObject().apply {
-            put("clientInfo", clientInfo)
-            put("capabilities", capabilities)
-        }
-        sendRequest("initialize", params)
-    }
-
-    suspend fun sendRequest(method: String, params: JSONObject?): JSONObject {
-        val writer = stdinWriter
-        if (!isRunning || writer == null) {
-            throw IllegalStateException("Codex App-Server is not running")
-        }
-
-        val id = requestCounter.getAndIncrement()
-        val deferred = CompletableDeferred<JSONObject>()
-        pendingRequests[id] = deferred
-
-        val req = JSONObject().apply {
-            put("id", id)
-            put("method", method)
-            if (params != null) {
-                put("params", params)
-            }
-        }
-
-        val wire = req.toString() + "\n"
-        synchronized(writer) {
-            writer.write(wire)
-            writer.flush()
-        }
-
-        return deferred.await()
-    }
-
-    suspend fun startThread(cwd: String? = null, model: String? = null): String {
-        ensureStarted()
-        val params = JSONObject().apply {
-            put("cwd", cwd ?: workspaceDir.absolutePath)
-            put("ephemeral", false)
-            if (!model.isNullOrBlank()) {
-                put("model", model)
-            }
-        }
-        val res = sendRequest("thread/start", params)
-        val threadObj = res.optJSONObject("thread")
-        return threadObj?.optString("id") ?: res.optString("id", "thr_default")
-    }
-
-    suspend fun startTurn(threadId: String, userText: String, model: String? = null): String {
-        ensureStarted()
-        val inputItem = JSONObject().apply {
-            put("type", "text")
-            put("text", userText)
-            put("textElements", JSONArray())
-        }
-        val inputArray = JSONArray().apply { put(inputItem) }
-        val params = JSONObject().apply {
-            put("threadId", threadId)
-            put("input", inputArray)
-            if (!model.isNullOrBlank()) {
-                put("model", model)
-            }
-        }
-        val res = sendRequest("turn/start", params)
-        val turnObj = res.optJSONObject("turn")
-        return turnObj?.optString("id") ?: res.optString("id", "turn_default")
-    }
-
-    suspend fun interruptTurn(threadId: String, turnId: String) {
-        if (!isRunning) return
-        val params = JSONObject().apply {
-            put("threadId", threadId)
-            put("turnId", turnId)
-        }
-        sendRequest("turn/interrupt", params)
-    }
-
-    suspend fun listModels(): List<String> {
-        val defaultModels = listOf("o3-mini", "gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet", "deepseek-reasoner")
-        if (!isRunning) return defaultModels
-
-        return try {
-            val res = sendRequest("model/list", JSONObject().apply { put("includeHidden", false) })
-            val list = mutableListOf<String>()
-            val dataArray = res.optJSONArray("data") ?: res.optJSONArray("models")
-            if (dataArray != null) {
-                for (i in 0 until dataArray.length()) {
-                    val m = dataArray.getJSONObject(i)
-                    val id = m.optString("id").ifEmpty { m.optString("name") }
-                    if (id.isNotEmpty()) list.add(id)
-                }
-            }
-            if (list.isNotEmpty()) list else defaultModels
-        } catch (e: Exception) {
-            defaultModels
-        }
-    }
-
-    private suspend fun readStdoutLoop(proc: Process) {
-        val reader = BufferedReader(InputStreamReader(proc.inputStream, StandardCharsets.UTF_8))
-        while (scope.isActive && isRunning) {
-            val line = reader.readLine() ?: break
-            val trimmed = line.trim()
-            if (trimmed.isEmpty()) continue
-
-            try {
-                val json = JSONObject(trimmed)
-                if (json.has("id")) {
-                    val id = json.getLong("id")
-                    val deferred = pendingRequests.remove(id)
-                    if (deferred != null) {
-                        if (json.has("error")) {
-                            val err = json.getJSONObject("error")
-                            deferred.completeExceptionally(RuntimeException(err.optString("message", "Codex error")))
-                        } else {
-                            deferred.complete(json.optJSONObject("result") ?: JSONObject())
-                        }
-                    }
-                } else if (json.has("method")) {
-                    dispatchNotification(json.getString("method"), json.optJSONObject("params") ?: JSONObject())
-                }
-            } catch (e: Exception) {
-                AppLogger.w(TAG, "Error parsing stdout JSON: $trimmed")
-            }
-        }
-    }
-
-    private suspend fun readStderrLoop(proc: Process) {
-        val reader = BufferedReader(InputStreamReader(proc.errorStream, StandardCharsets.UTF_8))
-        while (scope.isActive && isRunning) {
-            val line = reader.readLine() ?: break
-            AppLogger.d(TAG, "[Codex Core Stderr] $line")
-        }
-    }
-
-    private suspend fun dispatchNotification(method: String, params: JSONObject) {
-        val threadId = params.optString("threadId", "")
-        val turnId = params.optString("turnId", "")
-
-        val event = when (method) {
-            "item/agentMessage/delta" -> {
-                CodexEvent(
-                    method = method,
-                    threadId = threadId,
-                    turnId = turnId,
-                    delta = params.optString("delta", "")
-                )
-            }
-            "item/reasoning/textDelta" -> {
-                CodexEvent(
-                    method = method,
-                    threadId = threadId,
-                    turnId = turnId,
-                    delta = params.optString("delta", "")
-                )
-            }
-            "item/started" -> {
-                val item = params.optJSONObject("item")
-                if (item?.optString("type") == "commandExecution") {
-                    CodexEvent(
-                        method = method,
-                        threadId = threadId,
-                        turnId = turnId,
-                        command = item.optString("command"),
-                        status = "started",
-                        rawParams = item
-                    )
-                } else null
-            }
-            "item/commandExecution/outputDelta" -> {
-                CodexEvent(
-                    method = method,
-                    threadId = threadId,
-                    turnId = turnId,
-                    output = params.optString("delta", "")
-                )
-            }
-            "item/completed" -> {
-                val item = params.optJSONObject("item")
-                if (item?.optString("type") == "commandExecution") {
-                    CodexEvent(
-                        method = method,
-                        threadId = threadId,
-                        turnId = turnId,
-                        command = item.optString("command"),
-                        status = "completed",
-                        rawParams = item
-                    )
-                } else null
-            }
-            "turn/completed", "turn/aborted" -> {
-                CodexEvent(
-                    method = method,
-                    threadId = threadId,
-                    turnId = turnId,
-                    status = method.substringAfter('/')
-                )
-            }
-            else -> null
-        }
-
-        if (event != null) {
-            _events.emit(event)
-        }
-    }
-
-    fun isCoreRunning(): Boolean = isRunning
 }
