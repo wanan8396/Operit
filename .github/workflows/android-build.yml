@@ -14,9 +14,12 @@ on:
           - ':app:assembleClone'
           - ':app:bundleRelease'
   push:
-    branches: [main]
+    branches: [main, feat/builtin-codex-engine]
     paths:
       - .github/workflows/android-build.yml
+      - ci/script/prepare_codex.py
+      - ci/script/test_codex_protocol.py
+      - docs/codex-api.md
       - .gitmodules
       - .npmrc
       - app/**
@@ -80,6 +83,14 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
+
+      - name: Prepare and smoke-test official Codex app-server
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 ci/script/prepare_codex.py --repository "$GITHUB_WORKSPACE"
+          python3 ci/script/prepare_codex.py --repository "$RUNNER_TEMP" --target x86_64-unknown-linux-musl --output "$RUNNER_TEMP/codex-app-server"
+          python3 ci/script/test_codex_protocol.py "$RUNNER_TEMP/codex-app-server"
 
       - name: Initialize terminal submodule
         shell: bash
