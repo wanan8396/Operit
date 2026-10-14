@@ -1,0 +1,35 @@
+name: Codex Shell APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/codex-thin-shell]
+    paths: ['codex-shell/**', '.github/workflows/codex-shell.yml']
+  pull_request:
+    paths: ['codex-shell/**', '.github/workflows/codex-shell.yml']
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Unit tests and standalone APK (no host tools or native Agent dependencies)
+        run: gradle -p codex-shell testDebugUnitTest assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: operit-codex-shell-debug
+          path: codex-shell/build/outputs/apk/debug/*.apk
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: codex-shell-test-results
+          path: codex-shell/build/test-results/
