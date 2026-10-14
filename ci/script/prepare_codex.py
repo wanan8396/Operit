@@ -36,6 +36,8 @@ def main():
     if not asset: raise SystemExit(f"missing official release asset with prefix {ASSET_PREFIX}")
     expected=(asset.get("digest") or "").removeprefix("sha256:")
     if len(expected)!=64: raise SystemExit("release asset has no sha256 digest")
+    expected_arch=TARGETS[args.target]
+    if expected_arch == "x86_64" and not args.output: raise SystemExit("x86_64 target requires --output temporary path")
     root=os.path.abspath(args.repository); out=os.path.abspath(args.output) if args.output else os.path.join(root,OUT); os.makedirs(os.path.dirname(out),exist_ok=True)
     with tempfile.TemporaryDirectory() as td:
         archive=os.path.join(td,ASSET); data,_=request(asset["browser_download_url"]); open(archive,"wb").write(data)
@@ -48,16 +50,18 @@ def main():
             if candidate.size<=0: raise SystemExit("empty app-server")
             src=tar.extractfile(candidate); assert src
             tmp=os.path.join(td,"server"); open(tmp,"wb").write(src.read())
-            if elf_arch(tmp)!=0xb7: raise SystemExit("app-server is not ELF aarch64")
+            machine=elf_arch(tmp); required_machine={"aarch64":183,"x86_64":62}[expected_arch]
+            if machine!=required_machine: raise SystemExit(f"app-server ELF machine mismatch: {machine} != {required_machine}")
             shutil.copyfile(tmp,out); os.chmod(out, stat.S_IRUSR|stat.S_IWUSR|stat.S_IXUSR|stat.S_IRGRP|stat.S_IXGRP|stat.S_IROTH|stat.S_IXOTH)
     if os.path.getsize(out)==0: raise SystemExit("installed app-server is empty")
-    # Preserve provenance and the upstream notices alongside the generated binary.
-    meta={"version":args.tag,"source":f"https://github.com/{OWNER_REPO}/releases/tag/{args.tag}","asset":ASSET,"digest":f"sha256:{expected}","size":os.path.getsize(out),"elf_machine":"aarch64","distribution":"official release; not built from Rust"}
-    open(os.path.join(os.path.dirname(out),"codex-app-server.json"),"w").write(json.dumps(meta,indent=2)+"\n")
-    for name in ("LICENSE","NOTICE"):
-        url=f"https://raw.githubusercontent.com/{OWNER_REPO}/{args.tag}/{name}"
-        try: body,_=request(url)
-        except Exception: body=(f"Upstream {name} unavailable at {args.tag}; see {url}\n").encode()
-        open(os.path.join(os.path.dirname(out),name),"wb").write(body)
+    meta={"version":args.tag,"source":f"https://github.com/{OWNER_REPO}/releases/tag/{args.tag}","asset":asset["name"],"digest":f"sha256:{expected}","size":os.path.getsize(out),"elf_machine":expected_arch,"distribution":"official release; not built from Rust"}
+    if not args.output:
+        out_dir=os.path.dirname(out)
+        open(os.path.join(out_dir,"codex-app-server.json"),"w").write(json.dumps(meta,indent=2)+"\n")
+        for name in ("LICENSE","NOTICE"):
+            url=f"https://raw.githubusercontent.com/{OWNER_REPO}/{args.tag}/{name}"
+            body,_=request(url)
+            if not body.strip(): raise SystemExit(f"upstream {name} is empty: {url}")
+            open(os.path.join(out_dir,name),"wb").write(body)
 
 if __name__=="__main__": main()
