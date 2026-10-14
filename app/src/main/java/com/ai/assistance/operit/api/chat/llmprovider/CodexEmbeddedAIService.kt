@@ -7,86 +7,51 @@ import com.ai.assistance.operit.data.model.ModelOption
 import com.ai.assistance.operit.data.model.ModelParameter
 import com.ai.assistance.operit.data.model.ToolPrompt
 import com.ai.assistance.operit.data.stats.ProviderUsageSnapshot
-import com.ai.assistance.operit.util.AppLogger
 import com.ai.assistance.operit.util.stream.Stream
 import com.ai.assistance.operit.util.stream.asStream
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
-/**
- * Operit 原生内置 Codex 智能体执行服务。
- * 实现 AIService 标准接口，将聊天交互直接委托给本地持久化 Codex 智能体内核。
- */
+/** Official local agent, authenticated only using the selected Operit API key. */
 class CodexEmbeddedAIService(
     private val context: Context,
-    private val modelName: String = "o3-mini",
+    private val apiEndpoint: String,
+    private val apiKeyProvider: ApiKeyProvider,
+    private val modelName: String,
+    private val customHeaders: Map<String, String> = emptyMap(),
     private val customCwd: String? = null
 ) : AIService {
-
-    companion object {
-        private const val TAG = "CodexEmbeddedAIService"
-    }
-
-    private val codexManager = CodexCoreManager.getInstance(context)
-    private val threadSessionMap = ConcurrentHashMap<String, String>()
-
-    private val _inputTokens = AtomicLong(0)
-    private val _cachedTokens = AtomicLong(0)
-    private val _outputTokens = AtomicLong(0)
-
-    override val inputTokenCount: Long get() = _inputTokens.get()
-    override val cachedInputTokenCount: Long get() = _cachedTokens.get()
-    override val outputTokenCount: Long get() = _outputTokens.get()
-    override val providerModel: String get() = "CODEX:$modelName"
-
-    override fun resetTokenCounts() {
-        _inputTokens.set(0)
-        _cachedTokens.set(0)
-        _outputTokens.set(0)
-    }
-
+    private val manager = CodexCoreManager(context.applicationContext)
+    private val serial = Mutex()
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val input = AtomicLong(0)
+    private val cached = AtomicLong(0)
+    private val output = AtomicLong(0)
+    @Volatile private var active: Pair<String, String>? = null
+    @Volatile private var activeJob: Job? = null
+    override val inputTokenCount: Long get() = input.get()
+    override val cachedInputTokenCount: Long get() = cached.get()
+    override val outputTokenCount: Long get() = output.get()
+    override val providerModel: String get() = "CODEX_API:$modelName"
+    override fun resetTokenCounts() { input.set(0); cached.set(0); output.set(0) }
     override fun cancelStreaming() {
-        // 可选中断当前 turn
+        activeJob?.cancel()
+        active?.let { (thread, turn) -> scope.launch { runCatching { manager.interrupt(thread, turn) } } }
     }
+    override suspend fun getModelsList(context: Context): Result<List<ModelOption>> =
+        Result.success(listOf(ModelOption(id = modelName, name = modelName)))
 
-    override suspend fun getModelsList(context: Context): Result<List<ModelOption>> {
-        return try {
-            val models = codexManager.listModels()
-            val list = models.map { id ->
-                ModelOption(
-                    id = id,
-                    name = id,
-                    displayName = "$id (Codex Native Agent)",
-                    ownedBy = "codex"
-                )
-            }
-            Result.success(list)
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
+    override suspend fun testConnection(context: Context): Result<String> = try {
+        manager.ensureStarted(apiEndpoint, apiKeyProvider.getApiKey(), modelName, customHeaders)
+        val thread = manager.startThread("Connection probe only; do not execute commands.", customCwd)
+        Result.success("Official Codex app-server ready ($thread). API key/provider configured; model inference not tested.")
+    } catch (e: CancellationException) { throw e } catch (e: Exception) { Result.failure(e) }
 
-    override suspend fun testConnection(context: Context): Result<String> {
-        return try {
-            codexManager.ensureStarted()
-            val models = codexManager.listModels()
-            Result.success("Codex 核心就绪，可用模型: " + models.joinToString(", "))
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
-
-    override suspend fun calculateInputTokens(
-        chatHistory: List<PromptTurn>,
-        availableTools: List<ToolPrompt>?
-    ): Long {
-        var totalChars = 0L
-        for (turn in chatHistory) {
-            totalChars += turn.content.length
-        }
-        return totalChars / 4
-    }
+    override suspend fun calculateInputTokens(chatHistory: List<PromptTurn>, availableTools: List<ToolPrompt>?): Long =
+        chatHistory.sumOf { it.content.length.toLong() } / 4L
 
     override suspend fun sendMessage(
         context: Context,
@@ -102,73 +67,66 @@ class CodexEmbeddedAIService(
         enableRetry: Boolean,
         recordTokenUsage: Boolean,
         onUsageFinalized: (suspend (attempt: Int?) -> Unit)?
-    ): Stream<String> {
-        return flow {
-            codexManager.ensureStarted()
-
-            // 提取最新用户输入
-            val lastUserTurn = chatHistory.lastOrNull { it.role.equals("user", ignoreCase = true) }
-            val promptText = lastUserTurn?.content ?: "Hello"
-
-            // 维护对应会话的 Thread ID
-            val sessionKey = "operit_active_chat"
-            var threadId = threadSessionMap[sessionKey]
-            if (threadId == null) {
-                threadId = codexManager.startThread(cwd = customCwd, model = modelName)
-                threadSessionMap[sessionKey] = threadId
-            }
-
-            // 触发 Codex 执行 Turn
-            val activeTurnId = codexManager.startTurn(threadId, promptText, model = modelName)
-
-            // 监听并流式返回 Codex 事件
-            var isTurnActive = true
-            val eventsFlow = codexManager.events
-
-            eventsFlow.collect { event ->
-                if (event.threadId == threadId) {
-                    if (!event.turnId.isNullOrEmpty() && event.turnId != activeTurnId) {
-                        return@collect
-                    }
-
-                    when (event.method) {
-                        "item/agentMessage/delta" -> {
-                            event.delta?.let { chunk ->
-                                if (chunk.isNotEmpty()) {
-                                    _outputTokens.addAndGet(chunk.length / 4L)
-                                    emit(chunk)
+    ): Stream<String> = flow {
+        serial.withLock {
+            activeJob = currentCoroutineContext()[Job]
+            resetTokenCounts()
+            var threadId: String? = null
+            try {
+                manager.ensureStarted(apiEndpoint, apiKeyProvider.getApiKey(), modelName, customHeaders)
+                val instructions = chatHistory.filter { it.role.equals("system", true) || it.role.equals("developer", true) }
+                    .joinToString("\n\n") { it.content } +
+                    "\nYou are running inside Operit. Use only Codex native tools. Do not emit Operit XML tool-call tags. Writes and interactive approvals are currently disabled."
+                val conversation = chatHistory.filterNot { it.role.equals("system", true) || it.role.equals("developer", true) }
+                require(conversation.isNotEmpty()) { "Codex needs conversation input" }
+                // Rehydrate all history into a fresh thread. No cross-chat global thread alias.
+                val text = conversation.joinToString("\n\n") { "[${it.role}]\n${it.content}" }
+                val thread = manager.startThread(instructions, customCwd)
+                threadId = thread
+                val events = manager.subscribe(thread) // Subscribe BEFORE turn/start to avoid early-event loss.
+                val turn = manager.startTurn(thread, text)
+                active = thread to turn
+                var complete = false
+                while (!complete) {
+                    val event = withTimeout(300_000) { events.receive() }
+                    val params = event.getJSONObject("params")
+                    when (event.optString("method")) {
+                        "item/agentMessage/delta" -> emit(params.optString("delta"))
+                        "item/reasoning/textDelta", "item/reasoning/summaryTextDelta" ->
+                            if (enableThinking) emit(params.optString("delta"))
+                        "thread/tokenUsage/updated" -> {
+                            val last = params.optJSONObject("tokenUsage")?.optJSONObject("last")
+                            if (last != null) {
+                                input.set(last.optLong("inputTokens"))
+                                cached.set(last.optLong("cachedInputTokens"))
+                                output.set(last.optLong("outputTokens"))
+                                onTokensUpdated(input.get(), cached.get(), output.get())
+                            }
+                        }
+                        "turn/completed" -> {
+                            val state = params.getJSONObject("turn")
+                            if (state.getString("id") == turn) {
+                                check(state.optString("status") == "completed") {
+                                    "Codex turn ${state.optString("status")}; check Responses API/model compatibility"
                                 }
+                                complete = true
                             }
-                        }
-                        "item/reasoning/textDelta" -> {
-                            event.delta?.let { rDelta ->
-                                if (rDelta.isNotEmpty()) {
-                                    emit("💭 *$rDelta* ")
-                                }
-                            }
-                        }
-                        "item/started" -> {
-                            if (event.command != null) {
-                                emit("\n\n> ⚙️ **Codex 执行命令**: `${event.command}`\n```bash\n")
-                            }
-                        }
-                        "item/commandExecution/outputDelta" -> {
-                            event.output?.let { out ->
-                                emit(out)
-                            }
-                        }
-                        "item/completed" -> {
-                            if (event.command != null) {
-                                emit("\n```\n> ✅ *命令执行完成*\n\n")
-                            }
-                        }
-                        "turn/completed", "turn/aborted" -> {
-                            isTurnActive = false
-                            return@collect
                         }
                     }
                 }
+                // No fabricated estimates sent to the accounting callback.
+                onUsageFinalized?.invoke(null)
+            } finally {
+                val unfinished = active
+                active = null
+                activeJob = null
+                if (unfinished != null) withContext(NonCancellable) {
+                    runCatching { withTimeout(3_000) { manager.interrupt(unfinished.first, unfinished.second) } }
+                }
+                threadId?.let(manager::unsubscribe)
             }
-        }.asStream()
-    }
+        }
+    }.asStream()
+
+    override fun release() { cancelStreaming(); manager.release(); scope.cancel() }
 }
