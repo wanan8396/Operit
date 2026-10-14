@@ -383,8 +383,9 @@ object AIServiceFactory {
                     thinkingOptionId = config.thinkingOptionId,
                 )
 
-            ApiProviderType.OPENAI_CODEX ->
-                CodexProvider(
+            ApiProviderType.OPENAI_CODEX -> {
+                // Existing OAuth provider remains separate from CODEX_API.
+                    CodexProvider(
                     authManager = com.ai.assistance.operit.data.api.CodexAuthManager.getInstance(context),
                     modelName = config.modelName,
                     httpClient = httpClient,
@@ -398,6 +399,15 @@ object AIServiceFactory {
                     thinkingConfigurations = config.thinkingConfigurations,
                     thinkingOptionId = config.thinkingOptionId,
                 )
+            }
+
+            ApiProviderType.CODEX_API -> CodexEmbeddedAIService(
+                context = context,
+                apiEndpoint = config.apiEndpoint,
+                apiKeyProvider = apiKeyProvider,
+                modelName = config.modelName,
+                customHeaders = customHeaders
+            )
 
             // Claude格式，支持Anthropic Claude系列
             ApiProviderType.ANTHROPIC,

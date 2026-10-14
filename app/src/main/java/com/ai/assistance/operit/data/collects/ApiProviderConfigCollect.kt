@@ -34,6 +34,11 @@ object ApiProviderConfigs {
             defaultApiEndpoint = "https://api.openai.com/v1/responses"
         ),
         ProviderApiConfig(
+            providerType = ApiProviderType.CODEX_API,
+            defaultModelName = "gpt-5-codex",
+            defaultApiEndpoint = "https://api.openai.com/v1/responses",
+        ),
+        ProviderApiConfig(
             providerType = ApiProviderType.OPENAI_CODEX,
             defaultModelName = "gpt-5.6-luna",
             defaultApiEndpoint = "https://chatgpt.com/backend-api/codex/responses",
