@@ -46,7 +46,7 @@ def main():
         if got != expected: raise SystemExit(f"digest mismatch: {got} != {expected}")
         with tarfile.open(archive,"r:gz") as tar:
             members=[m for m in tar.getmembers() if m.isfile()]
-            candidate=next((m for m in members if os.path.basename(m.name)=="codex-app-server"),None)
+            candidate=next((m for m in members if os.path.basename(m.name) in ("codex-app-server", prefix)),None)
             if not candidate: raise SystemExit("archive has no codex-app-server")
             if candidate.size<=0: raise SystemExit("empty app-server")
             src=tar.extractfile(candidate); assert src
