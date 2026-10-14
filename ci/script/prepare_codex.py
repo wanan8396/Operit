@@ -32,8 +32,9 @@ def main():
     ap=argparse.ArgumentParser(); ap.add_argument("--repository", default="."); ap.add_argument("--tag", default=TAG); ap.add_argument("--target", choices=TARGETS, default="aarch64-unknown-linux-musl"); ap.add_argument("--output"); args=ap.parse_args()
     api=f"https://api.github.com/repos/{OWNER_REPO}/releases/tags/{args.tag}"
     raw,_=request(api); release=json.loads(raw)
-    asset=next((a for a in release.get("assets",[]) if a.get("name","").startswith(ASSET_PREFIX) and a.get("name","").endswith(".tar.gz")),None)
-    if not asset: raise SystemExit(f"missing official release asset with prefix {ASSET_PREFIX}")
+    prefix=f"codex-app-server-{args.target}"
+    asset=next((a for a in release.get("assets",[]) if a.get("name","").startswith(prefix) and a.get("name","").endswith(".tar.gz")),None)
+    if not asset: raise SystemExit(f"missing official release asset with prefix {prefix}")
     expected=(asset.get("digest") or "").removeprefix("sha256:")
     if len(expected)!=64: raise SystemExit("release asset has no sha256 digest")
     expected_arch=TARGETS[args.target]
