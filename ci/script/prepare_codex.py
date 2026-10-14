@@ -4,13 +4,13 @@
 This deliberately consumes the published binary; it does not build Rust for Android.
 """
 from __future__ import annotations
-import argparse, hashlib, json, os, shutil, stat, struct, sys, tarfile, tempfile, urllib.request
+import argparse, hashlib, json, os, shutil, stat, struct, tarfile, tempfile, urllib.request
 
 OWNER_REPO = "openai/codex"
 TAG = "rust-v0.162.1"
-ASSET = "codex-app-server-aarch64-unknown-linux-musl.tar.gz"
+ASSET_PREFIX = "codex-app-server-aarch64-unknown-linux-musl"
 OUT = "app/src/main/assets/codex/codex-app-server"
-API = f"https://api.github.com/repos/{OWNER_REPO}/releases/tags/{TAG}"
+TARGETS = {"aarch64-unknown-linux-musl": "aarch64", "x86_64-unknown-linux-musl": "x86_64"}
 
 def request(url):
     req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "Operit-Codex-CI"})
@@ -29,14 +29,14 @@ def elf_arch(path):
     return struct.unpack_from("<H", h, 18)[0]
 
 def main():
-    ap=argparse.ArgumentParser(); ap.add_argument("--repository", default="."); ap.add_argument("--tag", default=TAG); args=ap.parse_args()
+    ap=argparse.ArgumentParser(); ap.add_argument("--repository", default="."); ap.add_argument("--tag", default=TAG); ap.add_argument("--target", choices=TARGETS, default="aarch64-unknown-linux-musl"); ap.add_argument("--output"); args=ap.parse_args()
     api=f"https://api.github.com/repos/{OWNER_REPO}/releases/tags/{args.tag}"
     raw,_=request(api); release=json.loads(raw)
-    asset=next((a for a in release.get("assets",[]) if a.get("name")==ASSET),None)
-    if not asset: raise SystemExit(f"missing official release asset {ASSET}")
+    asset=next((a for a in release.get("assets",[]) if a.get("name","").startswith(ASSET_PREFIX) and a.get("name","").endswith(".tar.gz")),None)
+    if not asset: raise SystemExit(f"missing official release asset with prefix {ASSET_PREFIX}")
     expected=(asset.get("digest") or "").removeprefix("sha256:")
     if len(expected)!=64: raise SystemExit("release asset has no sha256 digest")
-    root=os.path.abspath(args.repository); out=os.path.join(root,OUT); os.makedirs(os.path.dirname(out),exist_ok=True)
+    root=os.path.abspath(args.repository); out=os.path.abspath(args.output) if args.output else os.path.join(root,OUT); os.makedirs(os.path.dirname(out),exist_ok=True)
     with tempfile.TemporaryDirectory() as td:
         archive=os.path.join(td,ASSET); data,_=request(asset["browser_download_url"]); open(archive,"wb").write(data)
         got=sha256(archive)
