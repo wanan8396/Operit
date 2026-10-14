@@ -87,6 +87,7 @@ object EndpointCompleter {
                 return completeResponsesEndpoint(endpoint)
             }
 
+            ApiProviderType.CODEX_API,
             ApiProviderType.OPENAI_CODEX -> {
                 return endpoint
             }
