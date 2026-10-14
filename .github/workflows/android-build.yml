@@ -88,9 +88,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 ci/script/prepare_codex.py --repository "$GITHUB_WORKSPACE"
-          python3 ci/script/prepare_codex.py --repository "$RUNNER_TEMP" --target x86_64-unknown-linux-musl --output "$RUNNER_TEMP/codex-app-server"
-          python3 ci/script/test_codex_protocol.py "$RUNNER_TEMP/codex-app-server"
+          {
+            python3 ci/script/prepare_codex.py --repository "$GITHUB_WORKSPACE" &&
+            python3 ci/script/prepare_codex.py --repository "$RUNNER_TEMP" --target x86_64-unknown-linux-musl --output "$RUNNER_TEMP/codex-app-server" &&
+            python3 ci/script/test_codex_protocol.py "$RUNNER_TEMP/codex-app-server"
+          } >"$RUNNER_TEMP/codex-check.log" 2>&1 || {
+            tail -c 6000 "$RUNNER_TEMP/codex-check.log" | while IFS= read -r line; do echo "::error title=Codex preflight::$line"; done
+            exit 1
+          }
+          cat "$RUNNER_TEMP/codex-check.log"
 
       - name: Initialize terminal submodule
         shell: bash
