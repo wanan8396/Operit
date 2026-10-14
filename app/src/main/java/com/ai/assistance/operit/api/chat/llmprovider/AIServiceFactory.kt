@@ -383,8 +383,16 @@ object AIServiceFactory {
                     thinkingOptionId = config.thinkingOptionId,
                 )
 
-            ApiProviderType.OPENAI_CODEX ->
-                CodexProvider(
+            ApiProviderType.OPENAI_CODEX -> {
+                val isOAuth = config.apiEndpoint.contains("oauth", ignoreCase = true) || config.apiEndpoint.contains("chatgpt.com", ignoreCase = true)
+                if (!isOAuth) {
+                    CodexEmbeddedAIService(
+                        context = context,
+                        modelName = config.modelName.ifBlank { "o3-mini" },
+                        customCwd = null
+                    )
+                } else {
+                    CodexProvider(
                     authManager = com.ai.assistance.operit.data.api.CodexAuthManager.getInstance(context),
                     modelName = config.modelName,
                     httpClient = httpClient,
@@ -398,6 +406,8 @@ object AIServiceFactory {
                     thinkingConfigurations = config.thinkingConfigurations,
                     thinkingOptionId = config.thinkingOptionId,
                 )
+                }
+            }
 
             // Claude格式，支持Anthropic Claude系列
             ApiProviderType.ANTHROPIC,
