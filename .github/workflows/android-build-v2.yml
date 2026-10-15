@@ -2,6 +2,8 @@ name: Android Build V2
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
   push:
     branches: [main, feat/builtin-codex-engine, feat/codex-full-build]
     paths:
