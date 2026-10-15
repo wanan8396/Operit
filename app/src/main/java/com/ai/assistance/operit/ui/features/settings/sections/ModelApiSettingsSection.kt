@@ -2160,6 +2160,7 @@ private fun getProviderColor(providerTypeId: String): androidx.compose.ui.graphi
         ApiProviderType.XAI -> MaterialTheme.colorScheme.primary.copy(alpha = 0.94f)
         ApiProviderType.OPENAI_RESPONSES -> MaterialTheme.colorScheme.primary.copy(alpha = 0.92f)
         ApiProviderType.OPENAI_CODEX -> MaterialTheme.colorScheme.primary.copy(alpha = 0.98f)
+        ApiProviderType.CODEX_API -> MaterialTheme.colorScheme.primary.copy(alpha = 0.96f)
         ApiProviderType.OPENAI_RESPONSES_GENERIC -> MaterialTheme.colorScheme.primary.copy(alpha = 0.88f)
         ApiProviderType.OPENAI_GENERIC -> MaterialTheme.colorScheme.primary.copy(alpha = 0.85f)
         ApiProviderType.ANTHROPIC -> MaterialTheme.colorScheme.tertiary
@@ -2194,5 +2195,6 @@ private fun getProviderColor(providerTypeId: String): androidx.compose.ui.graphi
         ApiProviderType.NOVITA -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.75f)
         ApiProviderType.MINIMAX -> MaterialTheme.colorScheme.primary.copy(alpha = 0.78f)
         ApiProviderType.OTHER -> MaterialTheme.colorScheme.surfaceVariant
+        else -> MaterialTheme.colorScheme.surfaceVariant
     }
 }
