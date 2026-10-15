@@ -2198,3 +2198,5 @@ private fun getProviderColor(providerTypeId: String): androidx.compose.ui.graphi
         else -> MaterialTheme.colorScheme.surfaceVariant
     }
 }
+
+// Trigger build for official Codex CLI integration
