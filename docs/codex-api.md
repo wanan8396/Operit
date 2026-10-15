@@ -30,3 +30,5 @@ Device verification remains necessary: app-process PRoot permissions, server sta
 - Operit's Android/UI tools and packages are **not yet exported as Codex MCP or dynamic tools**. This is an engine/provider integration, not a completed replacement of the whole Operit agent/tool framework.
 - Only text/history is currently bridged. Images/audio/attachments, persistent thread resume, thinking separation, parameter mapping and full usage accounting need follow-up work.
 - No production credentials are placed in CI or the APK. API-model authentication is only testable on the configured device/provider.
+
+<!-- Build trigger for full Operit APK with embedded Codex CLI: 2026-10-15 -->
