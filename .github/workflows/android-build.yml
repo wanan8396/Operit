@@ -15,7 +15,7 @@ on:
           - ':app:assembleClone'
           - ':app:bundleRelease'
   push:
-    branches: [main, feat/builtin-codex-engine]
+    branches: [main, feat/builtin-codex-engine, feat/codex-full-build]
     paths:
       - .github/workflows/android-build.yml
       - ci/script/prepare_codex.py
