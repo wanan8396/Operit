@@ -31,4 +31,4 @@ Device verification remains necessary: app-process PRoot permissions, server sta
 - Only text/history is currently bridged. Images/audio/attachments, persistent thread resume, thinking separation, parameter mapping and full usage accounting need follow-up work.
 - No production credentials are placed in CI or the APK. API-model authentication is only testable on the configured device/provider.
 
-<!-- Build trigger for full Operit APK with embedded Codex CLI: 2026-10-15 -->
+<!-- Operit with embedded official Codex CLI: Pull Request build -->
