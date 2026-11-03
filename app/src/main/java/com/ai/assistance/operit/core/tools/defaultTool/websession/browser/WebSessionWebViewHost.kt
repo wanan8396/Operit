@@ -35,6 +35,12 @@ internal class WebSessionWebViewHost {
     fun detachContainer(target: FrameLayout) {
         if (container === target) {
             target.removeOnLayoutChangeListener(containerLayoutChangeListener)
+            // The session owns the WebView, not this disposable Compose container.
+            activeWebView?.let { webView ->
+                if (webView.parent === target) {
+                    target.removeView(webView)
+                }
+            }
             container = null
         }
     }
