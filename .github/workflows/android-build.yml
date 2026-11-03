@@ -12,6 +12,7 @@ on:
           - assembleDebug
           - ':app:assembleNightly'
           - ':app:assembleClone'
+          - ':app:assembleRelease'
           - ':app:bundleRelease'
   push:
     branches: [main]
