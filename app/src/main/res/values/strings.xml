@@ -8504,4 +8504,5 @@
     <string name="codex_usage_unavailable">额度暂时不可用</string>
     <string name="codex_reset_after_days">%1$d 天后重置</string>
     <string name="codex_reset_after_clock">%1$02d:%2$02d 后重置</string>
+    <string name="follow_chat_model_for_all_functions">Follow the current chat model for all functions</string>
 </resources>
