@@ -1,3 +1,4 @@
+import com.android.build.api.artifact.SingleArtifact
 import java.io.File
 import java.io.FileInputStream
 import java.net.HttpURLConnection
@@ -524,40 +525,42 @@ android {
 //    }
 }
 
-val signRotatedReleaseApk by tasks.registering {
-    description = "Signs the Release APK with the legacy V2 signer and rotated V3 signer."
-    group = "distribution"
-    dependsOn("packageRelease")
-    doLast {
-        signApkWithRotation(
-            project.layout.buildDirectory
-                .file("outputs/apk/release/app-release.apk")
-                .get()
-                .asFile,
-        )
+// Fork builds have no publisher keys. Rotation is enabled by its own configuration,
+// independently of ordinary release signing; partial rotation settings still fail validation.
+val rotationSigningConfigured =
+    localProperties.stringPropertyNames().any { it.startsWith("APK_ROTATION_") }
+
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        if (variant.buildType == "release" || variant.buildType == "nightly") {
+            val variantTaskName = variant.name.replaceFirstChar { it.uppercaseChar() }
+            val apkDirectory = variant.artifacts.get(SingleArtifact.APK)
+            val builtArtifactsLoader = variant.artifacts.getBuiltArtifactsLoader()
+            val signingTask = tasks.register("signRotated${variantTaskName}Apk") {
+                description = "Signs the ${variant.name} APK with the legacy V2 signer and rotated V3 signer."
+                group = "distribution"
+                dependsOn(apkDirectory)
+                doLast {
+                    // AGP records the actual filename, including unsigned and renamed APKs.
+                    val artifacts = requireNotNull(builtArtifactsLoader.load(apkDirectory.get())) {
+                        "APK output metadata was not produced for ${variant.name}"
+                    }
+                    require(artifacts.elements.isNotEmpty()) {
+                        "No APK outputs were produced for ${variant.name}"
+                    }
+                    artifacts.elements.forEach { artifact ->
+                        signApkWithRotation(File(artifact.outputFile))
+                    }
+                }
+            }
+
+            if (rotationSigningConfigured) {
+                tasks.matching { it.name == "assemble$variantTaskName" }.configureEach {
+                    finalizedBy(signingTask)
+                }
+            }
+        }
     }
-}
-
-val signRotatedNightlyApk by tasks.registering {
-    description = "Signs the Nightly APK with the legacy V2 signer and rotated V3 signer."
-    group = "distribution"
-    dependsOn("packageNightly")
-    doLast {
-        signApkWithRotation(
-            project.layout.buildDirectory
-                .file("outputs/apk/nightly/app-nightly.apk")
-                .get()
-                .asFile,
-        )
-    }
-}
-
-tasks.matching { it.name == "assembleRelease" }.configureEach {
-    finalizedBy(signRotatedReleaseApk)
-}
-
-tasks.matching { it.name == "assembleNightly" }.configureEach {
-    finalizedBy(signRotatedNightlyApk)
 }
 
 tasks.named("preBuild") {

@@ -10,6 +10,9 @@
 # RELEASE_KEY_PASSWORD=
 
 # New signer and lineage used for V3 on Android 9+.
+# Defining APK_ROTATION_* settings enables rotation after Release/Nightly assembly.
+# Leave all rotation settings unset for ordinary signing or unsigned fork builds.
+# Without RELEASE_* settings, assembleRelease produces app-release-unsigned.apk.
 # APK_ROTATION_NEW_STORE_FILE=C:/secure/operit/operit-release-2026.p12
 # APK_ROTATION_NEW_STORE_PASSWORD=
 # APK_ROTATION_NEW_KEY_ALIAS=operit-release-2026
