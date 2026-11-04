@@ -36,3 +36,16 @@ Publisher rotation must additionally be verified with private signing material:
 run `:app:assembleRelease` and `:app:assembleNightly` with the complete
 `APK_ROTATION_*` settings, then use `apksigner verify --verbose --print-certs`.
 Private publisher signing is not exercised by the fork workflow.
+
+## First Full Test Run
+
+Run 41817524506 compiled and executed 1335 tests, exposing six failures that the
+earlier compilation errors had masked.
+
+Three tests needed scoped Android logging isolation. Two assertions described
+obsolete generated source or incorrectly rejected a message explicitly saying
+that a missing result was not a cancellation.
+
+The remaining failure exposed a migration defect: `FILE_BINDING` was parsed as
+provider `FILE` and model `BINDING`. Reject legacy function counter names before
+splitting provider/model keys, and keep custom provider identities supported.

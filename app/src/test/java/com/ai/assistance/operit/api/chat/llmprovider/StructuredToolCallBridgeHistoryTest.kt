@@ -2,11 +2,13 @@ package com.ai.assistance.operit.api.chat.llmprovider
 
 import com.ai.assistance.operit.core.chat.hooks.PromptTurn
 import com.ai.assistance.operit.core.chat.hooks.PromptTurnKind
+import com.ai.assistance.operit.test.DisableAppLoggingRule
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 
 /**
@@ -15,6 +17,8 @@ import org.junit.Test
  * opened by the message right before its run. See issue #1027.
  */
 class StructuredToolCallBridgeHistoryTest {
+    @get:Rule
+    val disableAppLogging = DisableAppLoggingRule()
 
     @Test
     fun `unanswered calls are closed before the trailing tool result text`() {
@@ -43,7 +47,7 @@ class StructuredToolCallBridgeHistoryTest {
             ),
             placeholder
         )
-        assertFalse(placeholder.contains("用户取消"))
+        assertFalse(placeholder.contains("User cancelled"))
         assertEquals("The second read was skipped.", messages.at(4).getString("content"))
         assertToolResultsFollowTheirCalls(messages)
     }

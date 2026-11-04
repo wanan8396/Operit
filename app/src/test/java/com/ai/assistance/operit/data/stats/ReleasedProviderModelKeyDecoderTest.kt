@@ -1,5 +1,6 @@
 package com.ai.assistance.operit.data.stats
 
+import com.ai.assistance.operit.data.model.FunctionType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -22,7 +23,17 @@ class ReleasedProviderModelKeyDecoderTest {
 
     @Test
     fun `pre provider model function key is skipped`() {
-        assertNull(ReleasedProviderModelKeyDecoder.decodeOrNull("CHAT"))
+        for (function in FunctionType.entries) {
+            assertNull(function.name, ReleasedProviderModelKeyDecoder.decodeOrNull(function.name))
+        }
         assertNull(ReleasedProviderModelKeyDecoder.decodeOrNull("FILE_BINDING"))
+    }
+
+    @Test
+    fun `unknown provider identities still decode`() {
+        assertEquals(
+            ReleasedProviderModelKey("CUSTOM:model_name", "CUSTOM", "model_name"),
+            ReleasedProviderModelKeyDecoder.decodeOrNull("CUSTOM_model_name")
+        )
     }
 }

@@ -3,13 +3,18 @@ package com.ai.assistance.operit.api.chat.llmprovider
 import com.ai.assistance.operit.data.collects.ApiProviderConfigs
 import com.ai.assistance.operit.data.collects.ModelThinkingConfigDefaults
 import com.ai.assistance.operit.data.model.ApiProviderType
+import com.ai.assistance.operit.test.DisableAppLoggingRule
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 
 class XaiProviderReasoningTest {
+    @get:Rule
+    val disableAppLogging = DisableAppLoggingRule()
+
     private val thinkingConfigurations = ModelThinkingConfigDefaults.forProvider(ApiProviderType.XAI.name)
 
     private fun mapping(modelName: String): ThinkingQualityMapping =
