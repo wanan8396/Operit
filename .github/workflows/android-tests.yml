@@ -3,7 +3,7 @@ name: Android Tests
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, feat/plan-steps-and-subagents]
     paths:
       - .github/workflows/android-tests.yml
       - .gitmodules
@@ -158,6 +158,12 @@ jobs:
           set -euo pipefail
           echo "sdk.dir=$ANDROID_HOME" > local.properties
 
+      - name: Test subagent retry continuity
+        run: >-
+          ./gradlew :app:testDebugUnitTest --stacktrace --no-daemon
+          --tests 'com.ai.assistance.operit.core.tools.defaultTool.standard.SubagentContinuationTest'
+          --tests 'com.ai.assistance.operit.core.tools.defaultTool.standard.SubagentRetryRunnerTest'
+          --tests 'com.ai.assistance.operit.data.stats.SubagentProgressStoreTest'
       - name: Run JVM unit tests
         run: ./gradlew :app:testDebugUnitTest --stacktrace --no-daemon
 

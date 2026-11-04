@@ -378,7 +378,10 @@ internal class WebSessionBrowserHost(
             params.width = 1
             params.height = 1
             params.gravity = Gravity.TOP or Gravity.START
-            params.flags = browserOverlayWindowFlags(expanded = false)
+            params.flags =
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
 
             indicatorParams?.let {
                 params.x = it.x
@@ -399,7 +402,7 @@ internal class WebSessionBrowserHost(
         params.gravity = Gravity.CENTER
         params.x = 0
         params.y = 0
-        params.flags = browserOverlayWindowFlags(expanded = true)
+        params.flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
         params.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
     }
 
@@ -712,7 +715,7 @@ internal class WebSessionBrowserHost(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
                 type,
-                browserOverlayWindowFlags(expanded = true),
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.CENTER
@@ -725,7 +728,9 @@ internal class WebSessionBrowserHost(
                 1,
                 1,
                 type,
-                browserOverlayWindowFlags(expanded = false),
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
@@ -775,22 +780,6 @@ internal class WebSessionBrowserHost(
 
     private fun dp(value: Int): Int =
         (value * appContext.resources.displayMetrics.density).roundToInt()
-}
-
-// WindowManager overlays do not inherit an Activity's hardware-acceleration flag.
-// Compose and Chromium must stay on the accelerated rendering path from the first
-// addView, including while minimized; changing flags later cannot enable it reliably.
-internal fun browserOverlayWindowFlags(expanded: Boolean): Int {
-    val renderingFlags =
-        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
-    return if (expanded) {
-        renderingFlags
-    } else {
-        renderingFlags or
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-    }
 }
 
 private class WebSessionOverlayLifecycleOwner :

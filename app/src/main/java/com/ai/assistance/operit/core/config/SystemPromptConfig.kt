@@ -227,7 +227,9 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
     // Always replace the introduction placeholder so an empty intro removes it cleanly.
     var result = systemPrompt
 
-    result = result.replace("BEGIN_SELF_INTRODUCTION_SECTION", customIntroPrompt)
+    val roleSection = if (customIntroPrompt.isEmpty()) "" else
+        "<assistant_role source=\"character_card\">\n" + customIntroPrompt + "\n</assistant_role>"
+    result = result.replace("BEGIN_SELF_INTRODUCTION_SECTION", roleSection)
 
     return result
   }
@@ -450,7 +452,8 @@ AVAILABLE_TOOLS_SECTION""".trimIndent()
                         ""
                     }
                 )
-                .replace("AVAILABLE_TOOLS_SECTION", if (useEnglish) availableToolsEn else availableToolsCn)
+                .replace("AVAILABLE_TOOLS_SECTION", "<tool_definitions>\n" +
+                    (if (useEnglish) availableToolsEn else availableToolsCn) + "\n</tool_definitions>")
         }
     } else {
         // Remove all guidance sections when tools are disabled

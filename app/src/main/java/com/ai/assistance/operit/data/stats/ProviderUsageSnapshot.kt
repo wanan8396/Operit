@@ -98,6 +98,7 @@ object ProviderUsageNormalizer {
                     ?.optLong("cached_tokens", -1)
                     ?.takeIf { it >= 0 }
                 ?: usage.optLong("cached_tokens", -1).takeIf { it >= 0 }
+                ?: usage.optLong("prompt_cache_hit_tokens", -1).takeIf { it >= 0 }
         val cacheWrite =
             usage.optJSONObject("prompt_tokens_details")
                 ?.optLong("cache_creation_input_tokens", -1)

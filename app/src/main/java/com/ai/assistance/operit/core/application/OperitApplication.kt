@@ -42,6 +42,7 @@ import com.ai.assistance.operit.data.preferences.initAndroidPermissionPreference
 import com.ai.assistance.operit.data.preferences.initUserPreferencesManager
 import com.ai.assistance.operit.data.preferences.preferencesManager
 import com.ai.assistance.operit.data.repository.CustomEmojiRepository
+import com.ai.assistance.operit.data.stats.PlanStepStore
 import com.ai.assistance.operit.data.stats.TokenUsageRepository
 import com.ai.assistance.operit.ui.features.chat.webview.LocalWebServer
 import com.ai.assistance.operit.ui.features.chat.webview.workspace.editor.language.LanguageFactory
@@ -120,6 +121,10 @@ class OperitApplication : Application(), ImageLoaderFactory, WorkConfiguration.P
         val startTime = System.currentTimeMillis()
         appStartupTimeMs = startTime
         instance = this
+        PlanStepStore.initialize(this)
+        com.ai.assistance.operit.data.stats.RequestPerformanceStore.initialize(
+            com.ai.assistance.operit.data.stats.RequestPerformancePreferences(this),
+        )
 
         // Workers and receivers can cold-start the process without creating an Activity.
         // Initialize process-wide preference dependencies before those entry points can run.

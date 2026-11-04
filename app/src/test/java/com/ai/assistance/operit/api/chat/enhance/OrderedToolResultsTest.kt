@@ -108,6 +108,18 @@ class OrderedToolResultsTest {
         assertEquals("", batch.message)
     }
 
+    @Test
+    fun subagentToolsKeepOnlyFinalJsonInsteadOfConcatenatingRunningPayloads() = runBlocking {
+        for (toolName in listOf("run_subagent", "run_subagents")) {
+            val completed = ToolResult(toolName, true, StringResultData("completed-payload"))
+            val finalResult = ToolExecutionManager.aggregateToolResults(
+                toolName,
+                flowOf(ToolResult(toolName, true, StringResultData("running-payload")), completed),
+            )
+            assertSame(completed, finalResult)
+        }
+    }
+
     private fun result(text: String) = ToolResult("read_file", true, StringResultData(text))
     private fun content(xml: String): String =
         checkNotNull(ChatMarkupRegex.contentTag.find(xml)).groupValues[1]

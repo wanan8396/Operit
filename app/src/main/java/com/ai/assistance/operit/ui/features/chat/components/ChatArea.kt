@@ -53,6 +53,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -86,6 +87,7 @@ import androidx.compose.ui.unit.sp
 import com.ai.assistance.operit.R
 import com.ai.assistance.operit.data.model.AiReference
 import com.ai.assistance.operit.data.model.ChatMessage
+import com.ai.assistance.operit.data.stats.SubagentProgressStore
 import com.ai.assistance.operit.data.model.ChatMessageDisplayMode
 import com.ai.assistance.operit.data.model.ChatMessageLocatorPreview
 
@@ -274,6 +276,8 @@ fun ChatArea(
     var viewportHeightPx by remember { mutableStateOf(0) }
     val messageAnchors = remember(currentChatId) { mutableStateMapOf<Long, ChatScrollMessageAnchor>() }
     var pendingJumpToMessageTimestamp by remember(currentChatId) { mutableStateOf<Long?>(null) }
+    val subagentSessions by SubagentProgressStore.conversationSessions.collectAsState()
+    val conversationSubagents = subagentSessions[currentChatId].orEmpty()
     val lastMessage = chatHistory.lastOrNull()
     val pendingTargetAnchor =
         pendingJumpToMessageTimestamp?.let { targetTimestamp -> messageAnchors[targetTimestamp] }
@@ -295,6 +299,7 @@ fun ChatArea(
         hasNewerDisplayHistory,
         isLoadingDisplayWindow,
         lastMessageContentLength,
+        conversationSubagents,
     ) {
         if (
             autoScrollToBottom &&
@@ -518,6 +523,21 @@ fun ChatArea(
                 Spacer(modifier = Modifier.height(4.dp))
             }
 
+            // The shared scroll container serves both bubble and cursor styles.
+            // Do not display current-round tasks beside an older history window.
+            if (!hasNewerDisplayHistory) {
+                // Tool/code/image nodes use the expanded bubble layout, whose body does not reserve avatar width.
+                val subagentBodyStart = when (chatStyle) {
+                    ChatStyle.CURSOR -> 16.dp
+                    ChatStyle.BUBBLE -> (if (themeSnapshot.bubbleShowAvatar) 0.dp else 8.dp) + bubbleAiContentPaddingLeft.dp
+                }
+                SubagentConversationProgress(
+                    agents = conversationSubagents,
+                    chatId = currentChatId,
+                    // The shared disclosure header applies its own title inset to child status indicators.
+                    modifier = Modifier.padding(start = subagentBodyStart),
+                )
+            }
             if (showLoadingIndicator) {
                 when (chatStyle) {
                     ChatStyle.BUBBLE -> {

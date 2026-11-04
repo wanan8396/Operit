@@ -1733,6 +1733,31 @@ fun registerAllTools(handler: AIToolHandler, context: Context) {
             executor = { tool -> runBlocking(Dispatchers.IO) { chatManagerTool.callChatModel(tool) } }
     )
 
+    handler.registerTool(
+        name = "run_subagent",
+        descriptionGenerator = { _ -> s(R.string.chat_subagent_action) },
+        executor = com.ai.assistance.operit.core.tools.defaultTool.standard.StandardSubagentTool(context)
+    )
+    handler.registerTool(
+        name = "run_subagents",
+        descriptionGenerator = { _ -> s(R.string.chat_subagent_action) },
+        executor = com.ai.assistance.operit.core.tools.defaultTool.standard.StandardSubagentBatchTool(context)
+    )
+    handler.registerTool(
+        name = "update_plan",
+        descriptionGenerator = { _ -> s(R.string.toolreg_update_plan_desc) },
+        executor = com.ai.assistance.operit.core.tools.defaultTool.standard.UpdatePlanTool()
+    )
+    handler.registerTool(
+        name = "read_plan",
+        descriptionGenerator = { _ -> s(R.string.toolreg_read_plan_desc) },
+        executor = com.ai.assistance.operit.core.tools.defaultTool.standard.ReadPlanTool()
+    )
+    handler.registerTool(
+        name = "read_session_context",
+        descriptionGenerator = { _ -> s(R.string.toolreg_read_session_context_desc) },
+        executor = com.ai.assistance.operit.core.tools.defaultTool.standard.ReadSessionContextTool(context)
+    )
     // 列出所有角色卡
     handler.registerTool(
             name = "list_character_cards",

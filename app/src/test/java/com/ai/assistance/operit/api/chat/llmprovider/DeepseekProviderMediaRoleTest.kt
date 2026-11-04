@@ -240,23 +240,21 @@ class DeepseekProviderMediaRoleTest {
                 supportsVision = true,
                 enableToolCall = true
             )
-        // Keep request construction protected in production, as in the DeepSeek test above.
-        val method =
-            OpenAIResponsesProvider::class.java.declaredMethods.single {
-                it.name == "createRequestBody" && it.parameterCount == 7
-            }
+        // Match the DeepSeek helper without widening the production method's visibility.
+        val method = OpenAIResponsesProvider::class.java.declaredMethods.single {
+            it.name == "createRequestBody" && it.parameterCount == 7
+        }
         method.isAccessible = true
-        val body =
-            method.invoke(
-                provider,
-                mock<Context>(),
-                history,
-                emptyList<ModelParameter<*>>(),
-                false,
-                false,
-                availableTools,
-                false
-            ) as RequestBody
+        val body = method.invoke(
+            provider,
+            mock<Context>(),
+            history,
+            emptyList<ModelParameter<*>>(),
+            false,
+            false,
+            availableTools,
+            false
+        ) as RequestBody
         val buffer = Buffer()
         body.writeTo(buffer)
         return JSONObject(buffer.readUtf8())

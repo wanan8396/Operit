@@ -20,7 +20,10 @@ import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** 管理多个AIService实例，根据功能类型提供不同的服务配置 */
-class MultiServiceManager(private val context: Context) {
+class MultiServiceManager(
+    private val context: Context,
+    private val requestConcurrencyPolicy: ModelRequestConcurrencyPolicy = ModelRequestConcurrencyPolicy.CONFIGURED,
+) {
     companion object {
         private const val TAG = "MultiServiceManager"
     }
@@ -29,7 +32,8 @@ class MultiServiceManager(private val context: Context) {
         private val closeAction: suspend () -> Unit,
         val service: AIService,
         val modelConfig: ModelConfigData,
-        val modelParameters: List<ModelParameter<*>>
+        val modelParameters: List<ModelParameter<*>>,
+        val modelIndex: Int = 0,
     ) {
         private val closed = AtomicBoolean(false)
 
@@ -43,6 +47,7 @@ class MultiServiceManager(private val context: Context) {
     private class ManagedService(
         val service: AIService,
         val modelConfig: ModelConfigData,
+        val modelIndex: Int,
         var activeLeases: Int = 0,
         var retired: Boolean = false,
         var released: Boolean = false
@@ -105,7 +110,8 @@ class MultiServiceManager(private val context: Context) {
             closeAction = { releaseLease(managedService) },
             service = managedService.service,
             modelConfig = managedService.modelConfig,
-            modelParameters = modelParameters
+            modelParameters = modelParameters,
+            modelIndex = managedService.modelIndex,
         )
     }
 
@@ -121,7 +127,8 @@ class MultiServiceManager(private val context: Context) {
             closeAction = { releaseLease(managedService) },
             service = managedService.service,
             modelConfig = managedService.modelConfig,
-            modelParameters = modelParameters
+            modelParameters = modelParameters,
+            modelIndex = managedService.modelIndex,
         )
     }
 
@@ -136,7 +143,8 @@ class MultiServiceManager(private val context: Context) {
         val service = createServiceFromConfig(config, configMapping.modelIndex)
         val managedService = ManagedService(
             service = service,
-            modelConfig = config
+            modelConfig = config,
+            modelIndex = configMapping.modelIndex,
         )
         serviceInstances[functionType] = managedService
 
@@ -151,13 +159,19 @@ class MultiServiceManager(private val context: Context) {
     private suspend fun getOrCreateServiceForConfigLocked(configId: String, modelIndex: Int): ManagedService {
         val normalizedIndex = modelIndex.coerceAtLeast(0)
         val cacheKey = "$configId#$normalizedIndex"
-        customServiceInstances[cacheKey]?.let { return it }
-
         val config = modelConfigManager.getModelConfigFlow(configId).first()
+        customServiceInstances[cacheKey]?.let { cached ->
+            if (cached.modelConfig == config) return cached
+            // Retire stale entries without interrupting requests holding active leases.
+            customServiceInstances.remove(cacheKey)
+            retireManagedServiceLocked(cached)
+        }
+
         val service = createServiceFromConfig(config, normalizedIndex)
         val managedService = ManagedService(
             service = service,
-            modelConfig = config
+            modelConfig = config,
+            modelIndex = normalizedIndex,
         )
         customServiceInstances[cacheKey] = managedService
 
@@ -226,11 +240,15 @@ class MultiServiceManager(private val context: Context) {
 
             if (functionType == FunctionType.CHAT) {
                 defaultService = null
+            }
+            if (functionType == FunctionType.CHAT ||
+                functionType == FunctionType.PLAN_GENERATION ||
+                functionType == FunctionType.PLAN_EXECUTION ||
+                functionType == FunctionType.SUBAGENT
+            ) {
                 val customServices = customServiceInstances.values.toList()
                 customServiceInstances.clear()
-                customServices.forEach { service ->
-                    retireManagedServiceLocked(service)
-                }
+                customServices.forEach { service -> retireManagedServiceLocked(service) }
             }
 
             AppLogger.d(TAG, "已移除功能${functionType}的服务实例缓存")
@@ -320,7 +338,8 @@ class MultiServiceManager(private val context: Context) {
         )
 
         val requestLimitPerMinute = config.requestLimitPerMinute.coerceAtLeast(0)
-        val maxConcurrentRequests = config.maxConcurrentRequests.coerceAtLeast(0)
+        // Subagent instances opt out of the shared model concurrency gate. Regular services keep it.
+        val maxConcurrentRequests = requestConcurrencyPolicy.effectiveLimit(config.maxConcurrentRequests)
 
         if (requestLimitPerMinute == 0 && maxConcurrentRequests == 0) {
             return rawService

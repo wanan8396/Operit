@@ -73,9 +73,32 @@ data class ChatContentCharacterCount(
     val contentCharacterCount: Long,
 )
 
+data class SessionContextSourceSize(val messageCount: Int, val sourceCharacterCount: Long)
+
 /** Reads message text in bounded rows so a single large message cannot overflow CursorWindow. */
 @Dao
 abstract class ChatContentDao {
+    // Retrieval must bound materialization before loading even one multi-megabyte tool result.
+    // Count variants too because hydration loads variants for each selected message page.
+    @Query("""
+        SELECT
+            (SELECT COUNT(*) FROM messages WHERE chatId = :chatId) AS messageCount,
+            ((SELECT COALESCE(SUM(LENGTH(content)), 0) FROM messages WHERE chatId = :chatId) +
+             (SELECT COALESCE(SUM(LENGTH(content)), 0) FROM message_variants WHERE chatId = :chatId))
+             AS sourceCharacterCount
+    """)
+    abstract suspend fun getSessionContextSourceSize(chatId: String): SessionContextSourceSize
+
+    @Query(MESSAGE_CONTENT_ROW_QUERY +
+        " WHERE chatId = :chatId ORDER BY timestamp ASC, messageId ASC LIMIT :limit OFFSET :offset")
+    protected abstract suspend fun querySessionContextPage(
+        chatId: String, offset: Int, limit: Int
+    ): List<MessageContentRow>
+
+    @Transaction
+    open suspend fun getSessionContextPage(chatId: String, offset: Int, limit: Int): List<MessageEntity> =
+        materializeMessages(querySessionContextPage(chatId, offset, limit))
+
     @Query(MESSAGE_CONTENT_ROW_QUERY + " WHERE chatId = :chatId ORDER BY timestamp ASC")
     protected abstract suspend fun queryMessagesForChat(chatId: String): List<MessageContentRow>
 

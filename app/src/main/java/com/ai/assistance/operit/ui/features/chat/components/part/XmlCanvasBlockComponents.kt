@@ -47,6 +47,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastCoerceAtLeast
 import kotlin.math.max
 
+private val ExpandableHeaderIconSize = 20.dp
+private val ExpandableHeaderTitleGap = 4.dp
+
+// Share the header title origin with sibling progress rows so their alignment cannot drift.
+internal val ExpandableHeaderTitleStart = ExpandableHeaderIconSize + ExpandableHeaderTitleGap
+
 @Composable
 internal fun CanvasExpandableHeaderRow(
     title: String,
@@ -88,8 +94,8 @@ internal fun CanvasExpandableHeaderRow(
     ) {
         val widthPx = with(density) { maxWidth.roundToPx() }.fastCoerceAtLeast(1)
         val topBottomPaddingPx = 0
-        val iconSizePx = with(density) { 20.dp.roundToPx().toFloat() }
-        val gapPx = with(density) { 4.dp.roundToPx().toFloat() }
+        val iconSizePx = with(density) { ExpandableHeaderIconSize.roundToPx().toFloat() }
+        val gapPx = with(density) { ExpandableHeaderTitleGap.roundToPx().toFloat() }
         val textMaxWidth = (widthPx - iconSizePx.toInt() - gapPx.toInt()).fastCoerceAtLeast(0)
         val titleLayout =
             remember(title, titleStyle, textMeasurer, textMaxWidth) {

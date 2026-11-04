@@ -1,5 +1,6 @@
 package com.ai.assistance.operit.data.repository
 
+import androidx.room.withTransaction
 import android.content.Context
 import android.net.Uri
 import com.ai.assistance.operit.util.AppLogger
@@ -1637,6 +1638,25 @@ class ChatHistoryManager private constructor(private val context: Context) {
                 AppLogger.e(TAG, "Failed to get chat title for chat $chatId", e)
                 null
             }
+        }
+    }
+
+    /** Strict snapshot for context retrieval: failures/cancellation must not look like empty history. */
+    suspend fun loadSessionContextMessages(chatId: String): List<ChatMessage> = withContext(Dispatchers.IO) {
+        require(chatId.isNotBlank()) { "A chat id is required" }
+        database.withTransaction {
+            checkNotNull(chatDao.getChatById(chatId)) { "Session no longer exists" }
+            val size = chatContentDao.getSessionContextSourceSize(chatId)
+            require(size.messageCount <= 100_000 && size.sourceCharacterCount <= 8_000_000L) {
+                "Session exceeds the context retrieval source limit"
+            }
+            val messages = ArrayList<ChatMessage>(size.messageCount)
+            for (offset in 0 until size.messageCount step 250) {
+                val entities = chatContentDao.getSessionContextPage(chatId, offset, 250)
+                messages.addAll(hydrateMessages(chatId, entities))
+            }
+            check(messages.size == size.messageCount) { "Session snapshot changed during retrieval" }
+            messages
         }
     }
 

@@ -1469,6 +1469,12 @@ class MessageProcessingDelegate(
                             waitDurationMs = waitDurationMs
                         )
                 }
+                // A planning turn may change models; label the persisted reply with its final provider.
+                if (chatId != null) {
+                    service.getLastRoutedDisplayProviderAndModel(chatId)?.let { (actualProvider, actualModel) ->
+                        aiMessage = aiMessage.copy(provider = actualProvider, modelName = actualModel)
+                    }
+                }
                 aiMessage = aiMessage.copy(completedAt = System.currentTimeMillis())
 
                 if (isWaifuModeEnabled) {

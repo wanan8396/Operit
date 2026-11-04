@@ -66,7 +66,7 @@ fun CompactToolDisplay(
     // 显示详细内容的弹窗 - 仅在启用弹窗时显示
     if (showDetailDialog && hasParams && enableDialog) {
         ContentDetailDialog(
-            title = "$displayToolName ${context.getString(R.string.tool_call_parameters)}",
+            title = "${if ((displayToolName == "run_subagent" || displayToolName == "run_subagents")) context.getString(R.string.function_type_subagent) else displayToolName} ${context.getString(R.string.tool_call_parameters)}",
             content = displayParams,
             icon = getToolIcon(displayToolName),
             onDismiss = { showDetailDialog = false }
@@ -76,7 +76,7 @@ fun CompactToolDisplay(
     val summary = remember(displayParams) { buildParamsHeadPreview(displayParams) }
 
     CanvasToolSummaryRow(
-        toolName = displayToolName,
+        toolName = if ((displayToolName == "run_subagent" || displayToolName == "run_subagents")) context.getString(R.string.function_type_subagent) else displayToolName,
         summary = summary,
         semanticDescription = semanticDescription,
         leadingIcon = getToolIcon(displayToolName),
@@ -121,7 +121,7 @@ fun DetailedToolDisplay(
 
     if (showDetailDialog && hasParams && enableDialog) {
         ContentDetailDialog(
-            title = "$displayToolName ${context.getString(R.string.tool_call_parameters)}",
+            title = "${if ((displayToolName == "run_subagent" || displayToolName == "run_subagents")) context.getString(R.string.function_type_subagent) else displayToolName} ${context.getString(R.string.tool_call_parameters)}",
             content = displayParams,
             icon = getToolIcon(displayToolName),
             onDismiss = { showDetailDialog = false }
@@ -129,7 +129,7 @@ fun DetailedToolDisplay(
     }
 
     CanvasToolSummaryRow(
-        toolName = displayToolName,
+        toolName = if ((displayToolName == "run_subagent" || displayToolName == "run_subagents")) context.getString(R.string.function_type_subagent) else displayToolName,
         summary = paramsSizeLabel,
         semanticDescription = semanticDescription,
         leadingIcon = getToolIcon(displayToolName),

@@ -4,6 +4,8 @@ import android.content.Context
 import com.ai.assistance.operit.R
 import com.ai.assistance.operit.util.AppLogger
 import com.ai.assistance.operit.api.chat.EnhancedAIService
+import com.ai.assistance.operit.core.chat.ContextDiagnosticsBuilder
+import com.ai.assistance.operit.data.stats.ContextDiagnosticsStore
 import com.ai.assistance.operit.core.chat.AIMessageManager
 import com.ai.assistance.operit.core.chat.hooks.PromptTurn
 import com.ai.assistance.operit.core.chat.hooks.PromptTurnKind
@@ -261,6 +263,24 @@ class MessageCoordinationDelegate(
         }
     }
 
+    /**
+     * Live phase routing for context-window math. Null means a non-chat prompt keeps the caller's
+     * own resolution; generation/review intentionally use the planner binding here as well.
+     */
+    private suspend fun resolvePhaseRequestTarget(
+        chatId: String?,
+        configId: String?,
+        modelIndex: Int?,
+        promptFunctionType: PromptFunctionType,
+    ): FunctionConfigMapping? {
+        if (promptFunctionType != PromptFunctionType.CHAT) return null
+        val mappings = FunctionalConfigManager(context).functionConfigMappingWithIndexFlow.first()
+        val stage = chatId?.let { com.ai.assistance.operit.data.stats.PlanModelStageStore.read(it) }
+        return com.ai.assistance.operit.data.preferences.SelectedRequestModel.resolve(
+            FunctionType.CHAT, mappings, configId, modelIndex, false, stage,
+        )
+    }
+
     suspend fun refreshStableContextWindow(
         chatId: String? = null,
         roleCardId: String? = null,
@@ -284,6 +304,13 @@ class MessageCoordinationDelegate(
                 ?: currentMemorySpaceIdOverride
                 ?: effectiveRoleCardId?.let { resolveRoleCardMemoryProfileOverride(it) }
 
+        val requestTarget = resolvePhaseRequestTarget(
+            targetChatId, effectiveChatModelConfigIdOverride, effectiveChatModelIndexOverride, effectivePromptFunctionType,
+        )
+        val windowConfigId =
+            if (requestTarget == null) effectiveChatModelConfigIdOverride else requestTarget.configId
+        val windowModelIndex =
+            if (requestTarget == null) effectiveChatModelIndexOverride else requestTarget.modelIndex
         val newWindowSize =
             recalculateStableWindowSize(
                 service = service,
@@ -292,8 +319,8 @@ class MessageCoordinationDelegate(
                 promptFunctionType = effectivePromptFunctionType,
                 groupOrchestrationMode = groupOrchestrationMode,
                 groupParticipantNamesText = groupParticipantNamesText,
-                chatModelConfigIdOverride = effectiveChatModelConfigIdOverride,
-                chatModelIndexOverride = effectiveChatModelIndexOverride,
+                chatModelConfigIdOverride = windowConfigId,
+                chatModelIndexOverride = windowModelIndex,
                 memorySpaceIdOverride = effectiveMemorySpaceIdOverride
             )
         val (inputTokens, outputTokens) = tokenStatsDelegate.getCumulativeTokenCounts(targetChatId)
@@ -372,7 +399,7 @@ class MessageCoordinationDelegate(
                     proxySenderNameOverride = proxySenderNameOverride,
                     chatModelConfigIdOverride = chatModelConfigIdOverride,
                     chatModelIndexOverride = chatModelIndexOverride,
-                    turnOptions = turnOptions
+                    turnOptions = turnOptions,
                 )
             }
         } else {
@@ -386,7 +413,7 @@ class MessageCoordinationDelegate(
                 proxySenderNameOverride = proxySenderNameOverride,
                 chatModelConfigIdOverride = chatModelConfigIdOverride,
                 chatModelIndexOverride = chatModelIndexOverride,
-                turnOptions = turnOptions
+                turnOptions = turnOptions,
             )
         }
     }
@@ -535,7 +562,7 @@ class MessageCoordinationDelegate(
         enableGroupOrchestration: Boolean = true,
         isGroupOrchestrationTurn: Boolean = false,
         groupParticipantNamesText: String? = null,
-        turnOptions: ChatTurnOptions = ChatTurnOptions()
+        turnOptions: ChatTurnOptions = ChatTurnOptions(),
     ) {
         // 如果不是自动续写，更新当前的 promptFunctionType
         if (!isAutoContinuation) {
@@ -556,6 +583,7 @@ class MessageCoordinationDelegate(
             cancelPendingAutoContinuation(chatId, restoreIdleIfPendingState = false)
         }
         if (
+            com.ai.assistance.operit.data.stats.PlanModelStageStore.read(chatId) == null &&
             turnOptions.persistTurn &&
             enableGroupOrchestration &&
             shouldRunGroupOrchestration(
@@ -624,18 +652,21 @@ class MessageCoordinationDelegate(
         }
         val resolvedOverrides = try {
             if (promptFunctionType == PromptFunctionType.CHAT) {
-                val (resolvedChatModelConfigIdOverride, resolvedChatModelIndexOverride) =
-                    when {
-                        !chatModelConfigIdOverride.isNullOrBlank() -> {
-                            Pair(chatModelConfigIdOverride, (chatModelIndexOverride ?: 0).coerceAtLeast(0))
-                        }
-                        isAutoContinuation -> {
-                            Pair(currentChatModelConfigIdOverride, currentChatModelIndexOverride)
-                        }
-                        else -> {
-                            resolveRoleCardChatModelOverrides(roleCardId)
-                        }
+                val mappings = runBlocking {
+                    FunctionalConfigManager(context).functionConfigMappingWithIndexFlow.first()
+                }
+                val ordinaryTarget = when {
+                    !chatModelConfigIdOverride.isNullOrBlank() -> FunctionConfigMapping(chatModelConfigIdOverride, (chatModelIndexOverride ?: 0).coerceAtLeast(0))
+                    isAutoContinuation && !currentChatModelConfigIdOverride.isNullOrBlank() -> FunctionConfigMapping(currentChatModelConfigIdOverride!!, (currentChatModelIndexOverride ?: 0).coerceAtLeast(0))
+                    else -> {
+                        val (id, index) = resolveRoleCardChatModelOverrides(roleCardId)
+                        if (id.isNullOrBlank()) mappings[FunctionType.CHAT] ?: FunctionConfigMapping()
+                        else FunctionConfigMapping(id, (index ?: 0).coerceAtLeast(0))
                     }
+                }
+                // Preserve the ordinary selection so returning from generation never sticks to the planner.
+                val resolvedChatModelConfigIdOverride = ordinaryTarget.configId
+                val resolvedChatModelIndexOverride = ordinaryTarget.modelIndex
                 val resolvedMemorySpaceIdOverride =
                     when {
                         !memorySpaceIdOverride.isNullOrBlank() -> memorySpaceIdOverride
@@ -662,7 +693,12 @@ class MessageCoordinationDelegate(
         val resolvedMemorySpaceIdOverride = resolvedOverrides.third
         val chatContextSettings =
             runBlocking {
-                resolveChatContextSettingsForRequest(resolvedChatModelConfigIdOverride)
+                val requestTarget = resolvePhaseRequestTarget(
+                    chatId, resolvedChatModelConfigIdOverride, resolvedChatModelIndexOverride, promptFunctionType,
+                )
+                val settingsConfigId =
+                    if (requestTarget == null) resolvedChatModelConfigIdOverride else requestTarget.configId
+                resolveChatContextSettingsForRequest(settingsConfigId)
             }
 
         if (!isAutoContinuation) {
@@ -1603,6 +1639,7 @@ class MessageCoordinationDelegate(
             val success =
                 summarizeHistory(
                     autoContinue = false,
+                    compressionReason = "manual",
                     chatIdOverride = currentChatId,
                     isGroupChat = isGroupChatSession(currentChatId)
                 )
@@ -1622,9 +1659,11 @@ class MessageCoordinationDelegate(
         groupParticipantNamesText: String?
     ) {
         AppLogger.d(TAG, "接收到Token超限信号，开始执行总结并继续...")
+        if (summaryJob?.isActive == true) return
         summaryJob = coroutineScope.launch {
             summarizeHistory(
                 autoContinue = true,
+                compressionReason = "tool_token_limit",
                 chatIdOverride = chatId,
                 roleCardIdOverride = roleCardId,
                 isGroupChat = isGroupChatSession(chatId),
@@ -1751,6 +1790,20 @@ class MessageCoordinationDelegate(
         cancelSummaryInternal(chatId)
     }
 
+    // Shared by threshold summaries and anchored manual insertion; call only after persistence.
+    fun recordCompressionDiagnostics(
+        chatId: String,
+        reason: String,
+        messages: List<ChatMessage>,
+        summary: ChatMessage
+    ) {
+        val snapshot = ContextDiagnosticsBuilder.compression(reason, messages, summary)
+        ContextDiagnosticsStore.recordCompression(
+            chatId, snapshot.reason, snapshot.before, snapshot.after,
+            snapshot.coveredMessages, snapshot.recordedAt
+        )
+    }
+
     private fun launchAsyncSummaryForSend(
         snapshotMessages: List<ChatMessage>,
         beforeTimestamp: Long?,
@@ -1802,13 +1855,16 @@ class MessageCoordinationDelegate(
                     return@launch
                 }
 
-                chatHistoryDelegate.addSummaryMessage(
+                val inserted = chatHistoryDelegate.addSummaryMessage(
                     summaryMessage = summaryMessage,
                     beforeTimestamp = beforeTimestamp,
                     afterTimestamp = afterTimestamp,
                     chatIdOverride = originalChatId,
                 )
-
+                if (!inserted) return@launch
+                recordCompressionDiagnostics(
+                    originalChatId, "send_threshold", snapshotMessages, summaryMessage
+                )
                 refreshStableContextWindow(
                     chatId = originalChatId,
                     roleCardId = roleCardId,
@@ -1862,7 +1918,8 @@ class MessageCoordinationDelegate(
         roleCardIdOverride: String? = null,
         isGroupChat: Boolean = false,
         isGroupOrchestrationTurn: Boolean = false,
-        groupParticipantNamesText: String? = null
+        groupParticipantNamesText: String? = null,
+        compressionReason: String = "automatic_threshold"
     ): Boolean {
         if (_isSummarizing.value) {
             AppLogger.d(TAG, "已在总结中，忽略本次请求")
@@ -1921,22 +1978,51 @@ class MessageCoordinationDelegate(
                 )
 
             if (summaryMessage != null) {
-                chatHistoryDelegate.addSummaryMessage(
+                val inserted = chatHistoryDelegate.addSummaryMessage(
                     summaryMessage = summaryMessage,
                     beforeTimestamp = beforeTimestamp,
                     afterTimestamp = afterTimestamp,
                     chatIdOverride = currentChatId,
                 )
 
-                refreshStableContextWindow(
+                if (!inserted) {
+                    uiStateDelegate.showErrorMessage(context.getString(R.string.chat_summary_not_inserted))
+                    return false
+                }
+                if (currentChatId != null) {
+                    recordCompressionDiagnostics(currentChatId, compressionReason, currentMessages, summaryMessage)
+                }
+                val requestTarget = resolvePhaseRequestTarget(
+                    currentChatId, effectiveChatModelConfigIdOverride, effectiveChatModelIndexOverride, currentPromptFunctionType,
+                )
+                val contextConfigId =
+                    if (requestTarget == null) effectiveChatModelConfigIdOverride else requestTarget.configId
+                val contextModelIndex =
+                    if (requestTarget == null) effectiveChatModelIndexOverride else requestTarget.modelIndex
+                val refreshedWindow = refreshStableContextWindow(
                     chatId = currentChatId,
                     roleCardId = roleCardIdOverride,
                     groupOrchestrationMode = isGroupOrchestrationTurn,
                     groupParticipantNamesText = groupParticipantNamesText,
-                    chatModelConfigIdOverride = effectiveChatModelConfigIdOverride,
-                    chatModelIndexOverride = effectiveChatModelIndexOverride,
+                    chatModelConfigIdOverride = contextConfigId,
+                    chatModelIndexOverride = contextModelIndex,
                     memorySpaceIdOverride = effectiveMemorySpaceIdOverride
                 )
+                if (autoContinue) {
+                    checkNotNull(refreshedWindow) { "Cannot validate the context window after summarization" }
+                    val settings = resolveChatContextSettingsForRequest(contextConfigId)
+                    val windowLimit = com.ai.assistance.operit.core.chat.summaryContextWindowTokens(
+                        settings.baseContextLength, settings.maxContextLength, settings.enableMaxContextMode,
+                    )
+                    // Recursive compression cannot make progress when the rebuilt request is still over its boundary.
+                    if (!com.ai.assistance.operit.core.chat.canContinueAfterSummary(
+                            refreshedWindow, windowLimit, settings.summaryTokenThreshold.toDouble(),
+                        )) {
+                        AppLogger.w(TAG, "Summary persisted but request remains above threshold: chatId=$currentChatId, tokens=$refreshedWindow, limit=$windowLimit")
+                        uiStateDelegate.showErrorMessage(context.getString(R.string.chat_summary_context_still_full))
+                        return false
+                    }
+                }
                 summarySuccess = true
             } else {
                 AppLogger.w(TAG, "总结失败或无需总结")

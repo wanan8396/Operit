@@ -6,16 +6,16 @@ on:
       gradle_task:
         description: Gradle task to run
         required: true
-        default: assembleDebug
+        default: ':app:packageRelease'
         type: choice
         options:
           - assembleDebug
           - ':app:assembleNightly'
           - ':app:assembleClone'
-          - ':app:assembleRelease'
           - ':app:bundleRelease'
+          - ':app:packageRelease'
   push:
-    branches: [main]
+    branches: [main, feat/chat-token-meter-subagents, feat/plan-steps-and-subagents, fix/subagent-disconnect-lifecycle]
     paths:
       - .github/workflows/android-build.yml
       - .gitmodules
@@ -201,6 +201,29 @@ jobs:
           set -euo pipefail
           echo "sdk.dir=$ANDROID_HOME" > local.properties
 
+      - name: Test plan and subagent contracts
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:testReleaseUnitTest \
+            --tests 'com.ai.assistance.operit.core.tools.defaultTool.standard.*Test' \
+            --tests 'com.ai.assistance.operit.data.stats.*StoreTest' \
+            --tests 'com.ai.assistance.operit.data.stats.SubagentConversationProjectionTest' \
+            --tests 'com.ai.assistance.operit.data.stats.SubagentParentLifecycleTest' \
+            --tests 'com.ai.assistance.operit.api.chat.enhance.ToolExecutionScopeTest' \
+            --tests 'com.ai.assistance.operit.core.chat.ContextSummaryPolicyTest' \
+            --tests 'com.ai.assistance.operit.ui.features.chat.components.SubagentConversationStatusTest' \
+            --tests 'com.ai.assistance.operit.data.model.FunctionTypeTest' \
+            --tests 'com.ai.assistance.operit.data.preferences.FunctionalConfigSubagentMappingTest' \
+            --tests 'com.ai.assistance.operit.data.preferences.FunctionalConfigPlanMappingTest' \
+            --tests 'com.ai.assistance.operit.data.preferences.SelectedRequestModelTest' \
+            --tests 'com.ai.assistance.operit.data.stats.PlanStatePersistenceTest' \
+            --tests 'com.ai.assistance.operit.ui.features.chat.components.HeaderPlanVisibilityTest' \
+            --tests 'com.ai.assistance.operit.ui.features.chat.components.HeaderSubagentRoundTest' \
+            --tests 'com.ai.assistance.operit.api.chat.enhance.ToolCallBudgetTest' \
+            --tests 'com.ai.assistance.operit.api.chat.enhance.OrderedToolResultsTest' \
+            --tests 'com.ai.assistance.operit.api.chat.enhance.ModelRequestConcurrencyPolicyTest' \
+            --tests 'com.ai.assistance.operit.api.chat.llmprovider.XaiProviderReasoningTest' \
+            --tests 'com.ai.assistance.operit.api.chat.llmprovider.DeepseekProviderMediaRoleTest' --stacktrace --no-daemon
       - name: Run Gradle build
         env:
           DISPATCH_GRADLE_TASK: ${{ inputs.gradle_task }}
@@ -209,13 +232,25 @@ jobs:
         run: |
           set -euo pipefail
           case "$EVENT_NAME" in
-            push) gradle_task=assembleDebug ;;
+            push)
+              if [[ "$GITHUB_REF_NAME" == "feat/plan-steps-and-subagents" ||
+                    "$GITHUB_REF_NAME" == "fix/subagent-disconnect-lifecycle" ]]; then
+                gradle_task=:app:packageRelease
+              else
+                gradle_task=assembleDebug
+              fi
+              ;;
             workflow_dispatch) gradle_task="$DISPATCH_GRADLE_TASK" ;;
             *) echo "Unsupported workflow event: $EVENT_NAME" >&2; exit 2 ;;
           esac
           chmod +x ./gradlew
           ./gradlew "$gradle_task" --stacktrace --no-daemon
 
+      - name: Record APK hashes and source revision
+        shell: bash
+        run: |
+          git rev-parse HEAD > app/build/outputs/SOURCE-COMMIT.txt
+          find app/build/outputs/apk -type f -name '*.apk' -exec sha256sum {} + > app/build/outputs/SHA256SUMS
       - name: Upload Android reports
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -234,6 +269,8 @@ jobs:
           name: operit-android-${{ github.run_number }}
           path: |
             app/build/outputs/apk/**/*.apk
+            app/build/outputs/SOURCE-COMMIT.txt
+            app/build/outputs/SHA256SUMS
             app/build/outputs/bundle/**/*.aab
           if-no-files-found: error
           retention-days: 14

@@ -297,9 +297,6 @@ internal fun WebSessionBrowserScreen(
                             update = { container ->
                                 webViewHost.attachContainer(container)
                             },
-                            onRelease = { container ->
-                                webViewHost.detachContainer(container)
-                            },
                             modifier = Modifier.fillMaxSize()
                         )
                     }

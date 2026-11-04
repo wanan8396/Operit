@@ -1582,9 +1582,9 @@ class ChatHistoryDelegate(
         beforeTimestamp: Long?,
         afterTimestamp: Long?,
         chatIdOverride: String? = null,
-    ) {
-        historyUpdateMutex.withLock {
-            val chatId = chatIdOverride ?: _currentChatId.value ?: return@withLock
+    ): Boolean {
+        return historyUpdateMutex.withLock {
+            val chatId = chatIdOverride ?: _currentChatId.value ?: return@withLock false
             val isCurrentChat = chatId == _currentChatId.value
             val currentDisplayStartTimestamp = currentChatWindow.currentDisplayStartTimestamp()
             val currentDisplayEndTimestamp = currentChatWindow.currentDisplayEndTimestamp()
@@ -1602,7 +1602,7 @@ class ChatHistoryDelegate(
                     TAG,
                     "总结消息插入被跳过: chatId=$chatId, before=$beforeTimestamp, after=$afterTimestamp",
                 )
-                return@withLock
+                return@withLock false
             }
 
             AppLogger.d(
@@ -1634,6 +1634,7 @@ class ChatHistoryDelegate(
                     reloadCurrentChatDisplayHistory(chatId)
                 }
             }
+            true
         }
     }
 
@@ -1653,17 +1654,11 @@ class ChatHistoryDelegate(
     
     /**
      * 找到合适的总结插入位置。
-     * 新的逻辑是，总结应该插入在上一个已完成对话轮次的末尾，
-     * 即最后一条AI消息之后。
+     * 摘要覆盖快照内的全部 user/ai 消息，必须插在最后一条被总结的消息之后。
+     * 否则尾部用户消息会同时出现在摘要与未压缩历史中，续聊再次达到压缩阈值。
      */
     fun findProperSummaryPosition(messages: List<ChatMessage>): Int {
-        // 从后往前找，找到最近的一条AI消息的索引。
-        val lastAiMessageIndex = messages.indexOfLast { it.sender == "ai" }
-
-        // 摘要应该被放置在最后一条AI消息之后，这标志着一个完整对话轮次的结束。
-        // 如果没有找到AI消息（例如，在聊天的开始），lastAiMessageIndex将是-1，
-        // 我们将在索引0处插入，这是正确的行为。
-        return lastAiMessageIndex + 1
+        return com.ai.assistance.operit.core.chat.summaryInsertionPosition(messages.map { it.sender })
     }
 
     /** 切换是否显示聊天历史选择器 */

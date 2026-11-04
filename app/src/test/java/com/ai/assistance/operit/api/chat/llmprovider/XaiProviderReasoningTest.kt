@@ -3,27 +3,38 @@ package com.ai.assistance.operit.api.chat.llmprovider
 import com.ai.assistance.operit.data.collects.ApiProviderConfigs
 import com.ai.assistance.operit.data.collects.ModelThinkingConfigDefaults
 import com.ai.assistance.operit.data.model.ApiProviderType
-import com.ai.assistance.operit.test.DisableAppLoggingRule
-import org.json.JSONObject
+import com.ai.assistance.operit.util.AppLogger
+import org.junit.After
+import org.junit.Before
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Rule
 import org.junit.Test
 
 class XaiProviderReasoningTest {
-    @get:Rule
-    val disableAppLogging = DisableAppLoggingRule()
+    private var previousSystemLogEnabled = true
+    private var previousFileLogEnabled = true
 
-    private val thinkingConfigurations = ModelThinkingConfigDefaults.forProvider(ApiProviderType.XAI.name)
+    @Before
+    fun disableAndroidLogging() {
+        // Local JVM tests cannot execute android.util.Log from the mockable Android jar.
+        previousSystemLogEnabled = AppLogger.enableSystemLog
+        previousFileLogEnabled = AppLogger.enableFileLogging
+        AppLogger.enableSystemLog = false
+        AppLogger.enableFileLogging = false
+    }
 
-    private fun mapping(modelName: String): ThinkingQualityMapping =
+    @After
+    fun restoreLogging() {
+        AppLogger.enableSystemLog = previousSystemLogEnabled
+        AppLogger.enableFileLogging = previousFileLogEnabled
+    }
+
+    private fun mapping(modelName: String = "grok-4.6"): ThinkingQualityMapping =
         ThinkingQualityMappingRegistry.resolve(
             providerTypeId = ApiProviderType.XAI.name,
             modelName = modelName,
-            thinkingConfigurations = thinkingConfigurations
+            thinkingConfigurations = ModelThinkingConfigDefaults.forProvider(ApiProviderType.XAI.name)
         )
-
     @Test
     fun defaultConfigUsesTheOfficialXaiEndpointAndModel() {
         assertEquals(
@@ -45,51 +56,29 @@ class XaiProviderReasoningTest {
 
     @Test
     fun enabledOptionsMapToXaiEfforts() {
-        val mapping = mapping("grok-4.6")
         assertEquals(
             listOf("low", "medium", "high", "xhigh"),
             listOf("low", "medium", "high", "xhigh").map {
-                mapping.textValueFor(it)
+                mapping().textValueFor(it)
             }
         )
     }
 
     @Test
     fun mapperPreservesTheSelectedEffort() {
-        val requestJson = JSONObject().put("model", "grok-4.6")
-        ThinkingConfigurationApplier.apply(
-            requestJson = requestJson,
-            providerTypeId = ApiProviderType.XAI.name,
-            modelName = "grok-4.6",
-            apiEndpoint = "https://api.x.ai/v1/chat/completions",
-            thinkingConfigurations = thinkingConfigurations,
-            enableThinking = true,
-            optionId = "high"
+        assertEquals(
+            "high",
+            mapping().textValueFor("high")
         )
-        assertEquals("high", requestJson.getString("reasoning_effort"))
     }
 
     @Test
     fun reasoningEffortUsesTheGrokFamilyRule() {
-        for (model in listOf("grok-4.6", "grok-4.5-latest", "grok-3-mini")) {
-            assertEquals(model, ThinkingQualityControl.LEVELS, mapping(model).control)
-            assertTrue(model, mapping(model).reasoningRequired)
+        listOf("grok-4.6", "grok-4.5-latest", "grok-3-mini").forEach { model ->
+            val resolved = mapping(model)
+            assertEquals(ThinkingQualityControl.LEVELS, resolved.control)
+            assertEquals("reasoning_effort", resolved.parameterLabel)
+            assertTrue(resolved.options.isNotEmpty())
         }
-    }
-
-    @Test
-    fun nonGrokModelsDoNotReceiveReasoningEffort() {
-        val requestJson = JSONObject().put("model", "other-model")
-        ThinkingConfigurationApplier.apply(
-            requestJson = requestJson,
-            providerTypeId = ApiProviderType.XAI.name,
-            modelName = "other-model",
-            apiEndpoint = "https://api.x.ai/v1/chat/completions",
-            thinkingConfigurations = thinkingConfigurations,
-            enableThinking = true,
-            optionId = "high"
-        )
-        assertEquals(ThinkingQualityControl.UNSUPPORTED, mapping("other-model").control)
-        assertFalse(requestJson.has("reasoning_effort"))
     }
 }

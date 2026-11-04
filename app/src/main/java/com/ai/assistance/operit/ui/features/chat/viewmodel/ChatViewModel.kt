@@ -307,6 +307,18 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     val inputTokenCount: StateFlow<Long> by lazy { tokenStatsDelegate.cumulativeInputTokensFlow }
     val outputTokenCount: StateFlow<Long> by lazy { tokenStatsDelegate.cumulativeOutputTokensFlow }
     val perRequestTokenCount: StateFlow<Pair<Long, Long>?> by lazy { tokenStatsDelegate.perRequestTokenCountFlow }
+    // 计划步骤：会话级工作清单，由 update_plan 工具写入，右上角按钮展示进度
+    val planSteps: StateFlow<List<com.ai.assistance.operit.data.model.PlanStep>> by lazy {
+        combine(currentChatId, com.ai.assistance.operit.data.stats.PlanStepStore.plans) { chatId, plans ->
+            chatId?.let { plans[it] }.orEmpty()
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    }
+
+    val subagentProgress: StateFlow<List<com.ai.assistance.operit.data.stats.SubagentProgress>> by lazy {
+        combine(currentChatId, com.ai.assistance.operit.data.stats.SubagentProgressStore.sessions) { chatId, sessions ->
+            chatId?.let { sessions[it] }.orEmpty()
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    }
 
 
 
@@ -416,11 +428,9 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     init {
         // Initialize delegates in correct order to avoid circular references
         initializeDelegates()
-
         // Setup additional components
         setupPermissionSystemCollection()
         setupAttachmentDelegateToastCollection()
-
         // 初始化语音服务
         initializeVoiceService()
 
@@ -738,6 +748,10 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         chatHistoryDelegate.deleteChatHistory(chatId) { deleted ->
             if (deleted) {
                 pendingMessageQueueStore.removeChat(chatId)
+                com.ai.assistance.operit.data.stats.PlanStepStore.clear(chatId)
+                com.ai.assistance.operit.data.stats.ContextDiagnosticsStore.clear(chatId)
+                com.ai.assistance.operit.data.stats.SubagentProgressStore.clear(chatId)
+                com.ai.assistance.operit.data.stats.RequestPerformanceStore.clear(chatId)
             } else {
                 uiStateDelegate.showToast(context.getString(R.string.chat_locked_cannot_delete))
             }
@@ -745,8 +759,15 @@ class ChatViewModel(private val context: Context) : ViewModel() {
     }
 
     fun clearCurrentChat() {
+        val chatIdToClear = currentChatId.value
         chatHistoryDelegate.clearCurrentChat { deleted ->
             if (deleted) {
+                chatIdToClear?.let { chatId ->
+                    com.ai.assistance.operit.data.stats.PlanStepStore.clear(chatId)
+                    com.ai.assistance.operit.data.stats.ContextDiagnosticsStore.clear(chatId)
+                    com.ai.assistance.operit.data.stats.SubagentProgressStore.clear(chatId)
+                    com.ai.assistance.operit.data.stats.RequestPerformanceStore.clear(chatId)
+                }
                 uiStateDelegate.showToast(context.getString(R.string.chat_cleared))
             } else {
                 uiStateDelegate.showToast(context.getString(R.string.chat_locked_cannot_delete))
@@ -910,16 +931,22 @@ class ChatViewModel(private val context: Context) : ViewModel() {
                 )
 
                 if (summaryMessage != null) {
-                    // 插入总结消息
-                    chatHistoryDelegate.addSummaryMessage(
+                    // Only report insertion after the anchored summary was actually persisted.
+                    val inserted = chatHistoryDelegate.addSummaryMessage(
                         summaryMessage = summaryMessage,
                         beforeTimestamp = beforeTimestamp,
                         afterTimestamp = afterTimestamp,
+                        chatIdOverride = currentChatId,
                     )
-
-                    messageCoordinationDelegate.refreshStableContextWindow(chatId = currentChatId)
-
-                    uiStateDelegate.showToast(context.getString(R.string.chat_summary_inserted))
+                    if (inserted) {
+                        messageCoordinationDelegate.recordCompressionDiagnostics(
+                            currentChatId, "manual", messagesToSummarize, summaryMessage
+                        )
+                        messageCoordinationDelegate.refreshStableContextWindow(chatId = currentChatId)
+                        uiStateDelegate.showToast(context.getString(R.string.chat_summary_inserted))
+                    } else {
+                        uiStateDelegate.showErrorMessage(context.getString(R.string.chat_summary_not_inserted))
+                    }
                 } else {
                     uiStateDelegate.showToast(context.getString(R.string.chat_summary_generation_failed))
                 }
@@ -1457,6 +1484,7 @@ class ChatViewModel(private val context: Context) : ViewModel() {
         hideMentionSuggestionPanel()
     }
 
+    /** The model selected in the composer remains active across planning and tool execution. */
     fun sendUserMessage(promptFunctionType: PromptFunctionType = PromptFunctionType.CHAT) {
         hideMentionSuggestionPanel()
         messageCoordinationDelegate.sendUserMessage(
