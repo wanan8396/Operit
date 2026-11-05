@@ -413,9 +413,6 @@ fun ModelApiSettingsSection(
         hasInitializedProviderEndpointSync = true
         if (!shouldSyncEndpointByProviderChange) {
             // 首次进入页面时保留持久化配置，避免把用户已选择的端点覆盖成默认值。
-            if (selectedApiProvider == ApiProviderType.OPENAI_CODEX) {
-                apiEndpointInput = getDefaultApiEndpoint(selectedApiProvider)
-            }
             return@LaunchedEffect
         }
 
@@ -428,7 +425,6 @@ fun ModelApiSettingsSection(
         val previousDefaultEndpoint =
             previousProvider?.let { getDefaultApiEndpoint(it) }.orEmpty()
         val shouldApplyNewProviderDefault =
-            selectedApiProvider == ApiProviderType.OPENAI_CODEX ||
             apiEndpointInput.isEmpty() ||
                 isDefaultApiEndpoint(apiEndpointInput) ||
                 (previousDefaultEndpoint.isNotEmpty() && apiEndpointInput == previousDefaultEndpoint)
@@ -628,10 +624,12 @@ fun ModelApiSettingsSection(
                 )
                 SettingsTextField(
                     title = stringResource(R.string.api_endpoint),
-                    subtitle = stringResource(R.string.codex_endpoint_fixed),
+                    subtitle = stringResource(R.string.api_endpoint_placeholder),
                     value = apiEndpointInput,
-                    onValueChange = {},
-                    enabled = false,
+                    onValueChange = {
+                        apiEndpointInput = it.replace("\n", "").replace("\r", "").replace(" ", "")
+                    },
+                    enabled = true,
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Uri,
                         imeAction = ImeAction.Next,
