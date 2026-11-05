@@ -385,6 +385,7 @@ object AIServiceFactory {
 
             ApiProviderType.OPENAI_CODEX ->
                 CodexProvider(
+                    apiEndpoint = config.apiEndpoint,
                     authManager = com.ai.assistance.operit.data.api.CodexAuthManager.getInstance(context),
                     modelName = config.modelName,
                     httpClient = httpClient,
