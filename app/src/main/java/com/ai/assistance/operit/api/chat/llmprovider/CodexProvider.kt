@@ -36,8 +36,9 @@ class CodexProvider(
     private val enableWebSearch: Boolean = false,
     thinkingConfigurations: String = "",
     thinkingOptionId: String = "",
+    apiEndpoint: String = CodexOAuthProtocol.CODEX_RESPONSES_ENDPOINT,
 ) : OpenAIResponsesProvider(
-    responsesApiEndpoint = CodexOAuthProtocol.CODEX_RESPONSES_ENDPOINT,
+    responsesApiEndpoint = apiEndpoint.trim().ifBlank { CodexOAuthProtocol.CODEX_RESPONSES_ENDPOINT },
     apiKeyProvider = CodexAccessTokenProvider(authManager),
     modelName = modelName,
     client = httpClient,
