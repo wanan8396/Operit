@@ -233,7 +233,8 @@ jobs:
           set -euo pipefail
           case "$EVENT_NAME" in
             push)
-              if [[ "$GITHUB_REF_NAME" == "feat/plan-steps-and-subagents" ||
+              if [[ "$GITHUB_REF_NAME" == "main" ||
+                    "$GITHUB_REF_NAME" == "feat/plan-steps-and-subagents" ||
                     "$GITHUB_REF_NAME" == "fix/subagent-disconnect-lifecycle" ]]; then
                 gradle_task=:app:packageRelease
               else
